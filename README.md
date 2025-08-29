@@ -38,3 +38,13 @@ python app_script.py -s Alzheimer_SingleCell
 python app_script.py --help
 ```
 
+Note: `app_script.py` relies on [NetToolkit](https://hub.docker.com/r/frankfeng78/nettoolkit/tags) to download PubMed literature. Therefor, before running `app_script.py`, NetToolkit need to be run locally.
+1. Pull NetToolkit docker image
+```
+docker pull frankfeng78/nettoolkit:0.1.7
+```
+2. Run NetToolkit docker image
+```
+docker run -d --name nettoolkit -p3001:3001 frankfeng78/nettoolkit:0.1.7
+```
+
