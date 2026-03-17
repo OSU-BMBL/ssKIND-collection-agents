@@ -94,6 +94,10 @@ def execute_collection(
     count = query_count(query, mindate, maxdate)
     logger.info(f"Total articles found: {count}")
     pmids = query_pmids(query, count, mindate, maxdate)
+    
+    # TODO: [fengsh] just for test
+    pmid = list(pmids)
+    
     all_pmids = []
     wf = IdentifyWorkflow(
         llm=get_azure_openai(),

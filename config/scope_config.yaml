@@ -409,7 +409,7 @@ Alzheimer_Spatial:
     ("Alzheimer") AND (
     “spatial transcriptomic" OR 
     "spatial gene expression" OR 
-    "spatial transcriptomics
+    "spatial transcriptomics"
     ) 
     NOT (Review[Publication Type]) 
   mindate: "2020/01/01"
