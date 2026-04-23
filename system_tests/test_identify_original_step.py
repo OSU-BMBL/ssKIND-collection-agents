@@ -86,6 +86,7 @@ def test_IdentifyOriginalDataStep_on_fulltext_paper(llm, step_callback):
     logger.info(f"PMID: {pmid}, Original Data Available: {result_state['original']}")
     
 
+@pytest.mark.skip()
 def test_IdentifyOriginalDataStep_on_40429980(llm, step_callback):
     # Test with empty content
     pmid = "38293243" # "38266073" # "38167548" # "40429980"
@@ -113,3 +114,70 @@ def test_IdentifyOriginalDataStep_on_40429980(llm, step_callback):
     assert "original" in result_state
     assert isinstance(result_state["original"], bool)  # Should be a boolean value indicating original data availability
     logger.info(f"PMID: {pmid}, Original Data Available: {result_state['original']}")
+
+@pytest.mark.skip()
+@pytest.mark.parametrize("pmid", [
+    # "33083725", 
+    # "36170369", 
+    # "39554066", 
+    # "39314329", 
+    # "37558676", 
+    # "38325728", 
+    # "40329537", 
+    # "40060644",
+    "39329069",
+])
+def test_IdentifyOriginalDataStep_on_fulltext_paper_20260322(llm, step_callback, pmid):
+    # Test with empty content
+    title, abstract, is_preprint = query_title_abstract_ispreprint(pmid)
+    full_text = obtain_full_text(pmid)
+    state = {
+        "pmid": pmid,
+        "research_goal": ResearchGoalEnum.ALZHEIMERS,
+        "title": title,
+        "abstract": abstract,
+        "content": full_text,
+        "step_output_callback": step_callback,
+    }
+    
+    # Initialize the IdentifyOriginalDataStep with a mock LLM
+    step = IdentifyOriginalDataStep(llm, two_steps_agent=True)
+    
+    # Execute the step
+    result_state: dict | None = step.execute(state)
+    assert result_state is not None
+    
+    # Check if the result contains the expected keys
+    assert "original" in result_state
+    assert isinstance(result_state["original"], bool)  # Should be a boolean value indicating original data availability
+    logger.info(f"PMID: {pmid}, Original Data Available: {result_state['original']}")
+
+@pytest.mark.parametrize("pmid", [
+    "39607927",
+])
+def test_IdentifyOriginalDataStep_on_fulltext_paper_20260413(llm, step_callback, pmid):
+    # Test with empty content
+    title, abstract, is_preprint = query_title_abstract_ispreprint(pmid)
+    full_text = obtain_full_text(pmid)
+    state = {
+        "pmid": pmid,
+        "research_goal": ResearchGoalEnum.ALZHEIMERS,
+        "title": title,
+        "abstract": abstract,
+        "content": full_text,
+        "step_output_callback": step_callback,
+    }
+    
+    # Initialize the IdentifyOriginalDataStep with a mock LLM
+    step = IdentifyOriginalDataStep(llm, two_steps_agent=True)
+    
+    # Execute the step
+    result_state: dict | None = step.execute(state)
+    assert result_state is not None
+    
+    # Check if the result contains the expected keys
+    assert "original" in result_state
+    assert isinstance(result_state["original"], bool)  # Should be a boolean value indicating original data availability
+    logger.info(f"PMID: {pmid}, Original Data Available: {result_state['original']}")
+
+

@@ -12,6 +12,14 @@ from .constants import (
 
 logger = logging.getLogger(__name__)
 
+def article_processor(func):
+    def wrapper(*args, **kwargs):
+        res, text, code = func(*args, **kwargs)
+        if res and text is not None and len(text) > 0:
+            text = text.replace('\u2009', ' ').replace('\xa0', ' ')
+        return res, text, code
+    return wrapper
+
 class ArticleRetriever(object):
     def __init__(self):
         pass
@@ -66,19 +74,21 @@ class ArticleRetriever(object):
             return True, res.text, res.status_code
         return False, res.reason, res.status_code
 
-    def _extract_full_text_link(self, html_content: str) -> tuple[bool, str|None, int]:
+    def _extract_full_text_link(self, html_content: str) -> tuple[bool, str, int]:
         """
         extract full-text link from html content
         """
         soup = BeautifulSoup(html_content, "html.parser")
         tags = soup.select("div.full-view > div.full-text-links-list > a.link-item")
         if tags is None or len(tags) == 0:
-            return (False, "Can't get full-text url by selector", -1)
+            tags = soup.select("ul.identifiers span.identifier.doi a.id-link")
+            if tags is None or len(tags) == 0:
+                return (False, "Can't get full-text url by selector", -1)
         aTag = tags[0]
         full_text_url = aTag.attrs.get("href", None)
         if full_text_url is None:
             return (False, "Can't get full-text url from href attribute", -1)
-        return (True, str(full_text_url), 200)
+        return (True, full_text_url, 200)
 
     def _extract_full_text_url_from_abstract_page(self, pmid: str):
         """
@@ -90,18 +100,31 @@ class ArticleRetriever(object):
         url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
         r = make_get_request(url, headers=header, allow_redirects=True, cookies=cookies)
         if r.status_code != 200:
-            return (False, "", r.status_code)
-        html_content = r.text
+            res, text, code = self._request_full_text_from_url(url)
+            if not res and code != 200:
+                return (False, "", r.status_code)
+            html_content = text
+        else:
+            html_content = r.text
 
         # extract full-text link
         return self._extract_full_text_link(html_content)
 
+    @article_processor
     def request_article(self, pmid: str):
         pmid = pmid.strip()
 
         # support full-text url directly
         if pmid.startswith("http"):
             return self._request_full_text_from_url(pmid)
+
+        pmid_cache = os.environ.get("PMID_CACHE", "false")
+        if pmid_cache.lower() == "true":
+            data_folder = os.environ.get("DATA_FOLDER", "./data")
+            pmid_path = Path(data_folder) / f"{pmid}.html"
+            if pmid_path.exists():
+                logger.info(f"Found {pmid} paper from cache")
+                return True, pmid_path.read_text(), 200
 
         res, pmc_article, code = self._request_pmc_full_text(pmid)
         if res:
@@ -110,7 +133,7 @@ class ArticleRetriever(object):
         if not res:
             logger.error("Can't extract full-text url from abstract page")
             return res, full_text_url, code
-        return self._request_full_text_from_url(str(full_text_url))
+        return self._request_full_text_from_url(full_text_url)
 
 
 class ExtendArticleRetriever(ArticleRetriever):

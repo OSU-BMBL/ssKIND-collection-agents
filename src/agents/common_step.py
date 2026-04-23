@@ -5,6 +5,7 @@ import logging
 from langchain_openai.chat_models.base import BaseChatOpenAI
 
 from .constants import DEFAULT_TOKEN_USAGE
+from .agent_utils import IdentifyState
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class CommonStep(ABC):
         if token_usage is not None:
             state["step_output_callback"](token_usage=token_usage)
 
-    def execute(self, state):
+    def execute(self, state: IdentifyState):
         """
         Execute the step. This method should be overridden by subclasses.
         """

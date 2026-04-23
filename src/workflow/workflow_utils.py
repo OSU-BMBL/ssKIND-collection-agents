@@ -2,6 +2,7 @@
 import logging
 
 from ..paper_query.html_extractor import HtmlTableExtractor
+from ..paper_query.pubmed_query import query_full_text
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,9 @@ def convert_html_to_plaintext(
         sections = extractor.extract_sections(html)
         if sections is None:
             return None
+
+        # TODO: As we have included data availability and methods in the sections, we don't need to extract them separately.
+        """
         if include_data_availability:
             data_availability = extractor.extract_data_availability(html)
             if data_availability:
@@ -31,6 +35,7 @@ def convert_html_to_plaintext(
             methods = extractor.extract_methods(html)
             if methods:
                 sections.append({"section": "Methods", "content": methods})
+        """
         return "\n".join([sec["section"].strip() + "\n" + sec["content"].strip() \
                           for sec in sections])
     except Exception as e:
@@ -46,7 +51,6 @@ def obtain_full_text(pmid: str) -> str | None:
         str: The full text content of the paper, or None if not available.
     """
     try:
-        from ..paper_query.pubmed_query import query_full_text
         res, html = query_full_text(pmid)
         if not res or html is None:
             return None

@@ -294,15 +294,17 @@ class HtmlTableParser(object):
     
     def extract_sections(self, html: str):
         """
-        Yichuan 0528
         Generic section extraction for main body content (non-PMC).
         Returns [{'section': ..., 'content': ...}, ...]
+
+        References and acknowledgements are skipped (not included), but
+        traversal continues past them so later sections — supplementary
+        material, data availability, etc. — are still captured.
         """
-        stop_sections = [
+        skip_sections = [
                 "reference", "references",
-                "acknowledgement", "acknowledgment",
-                "acknowledgements", "acknowledgments",
-                "supplementary", "supplements"
+                # "acknowledgement", "acknowledgment",
+                # "acknowledgements", "acknowledgments",
         ]
 
         soup = BeautifulSoup(html, "html.parser")
@@ -325,19 +327,17 @@ class HtmlTableParser(object):
                 h_raw = el.get_text(strip=True)
                 h_low = h_raw.lower()
 
-                # On encountering References/Acknowledgements → finalize and exit
-                if any(kw in h_low for kw in stop_sections):
-                    if current and current["content"].strip():
-                        lines = list(dict.fromkeys(current["content"].splitlines()))
-                        current["content"] = "\n".join(lines).strip()
-                        sections.append(current)
-                    break
-
-                # Normal new heading
+                # Finalize previous section before starting a new one
                 if current and current["content"].strip():
                     lines = list(dict.fromkeys(current["content"].splitlines()))
                     current["content"] = "\n".join(lines).strip()
                     sections.append(current)
+
+                # References / acknowledgements: skip body, keep traversing
+                if any(kw in h_low for kw in skip_sections):
+                    current = None
+                    continue
+
                 current = {"section": h_raw, "content": ""}
                 continue
 
@@ -351,7 +351,7 @@ class HtmlTableParser(object):
                     # I use this one instead of the custom html_table_to_dataframe implementation,
                     # because it uses StringIO and is likely more robust.
                     # That said, the previous custom version hasn’t caused any major issues so far,
-                    # so I’m not eager to change it either.  - Yichuan 0528
+                    # so I’m not eager to change it either. 
                     markdown = dataframe_to_markdown(df)
                     if markdown and markdown not in seen_global:
                         current["content"] += markdown + "\n"
@@ -414,7 +414,6 @@ class PMCHtmlTableParser(object):
 
     def extract_abstract(self, html: str):
         """
-        Yichuan 0501
         """
         soup = BeautifulSoup(html, "html.parser")
 
@@ -441,13 +440,16 @@ class PMCHtmlTableParser(object):
     
     def extract_sections(self, html: str):
         """
-        Yichuan 0505
-        Extracts sections (h2/h3) and content between 'Abstract' and 'References' headings.
-        Include tables
+        Extracts sections (h2/h3) and content starting from 'Abstract'.
+
+        References and acknowledgements are skipped (not included), but
+        traversal continues past them so later sections — supplementary
+        material, data availability, etc. — are still captured.
         """
-        stop_sections = [
-            "reference", "acknowledgement", "acknowledgment", "supplementary",
-            "references", "acknowledgements", "acknowledgments", "supplements"
+        skip_sections = [
+            "reference", "references",
+            # "acknowledgement", "acknowledgment",
+            # "acknowledgements", "acknowledgments",
         ]
         soup = BeautifulSoup(html, "html.parser")
         body = soup.body
@@ -472,18 +474,17 @@ class PMCHtmlTableParser(object):
                         }
                         continue
 
-                    if started and any(
-                            x in heading_text for x in stop_sections):
+                    if started:
+                        # Finalize previous section before starting a new one
                         if current_section:
                             current_section["content"] = current_section["content"].strip()
                             sections.append(current_section)
                             current_section = None
-                        break
 
-                    if started:
-                        if current_section:
-                            current_section["content"] = current_section["content"].strip()
-                            sections.append(current_section)
+                        # References / acknowledgements: skip body, keep traversing
+                        if any(x in heading_text for x in skip_sections):
+                            continue
+
                         current_section = {
                             "section": element.get_text(strip=True),
                             "content": ""

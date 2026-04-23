@@ -67,6 +67,22 @@ def sc_alzheimers_identify_relevant_instructions():
     return read_config_identify_relevant_instructions("Alzheimer_SingleCell")
 
 @pytest.fixture(scope="module")
+def spatial_alzheimers_identify_original_instructions():
+    return read_config_identify_original_instructions("Alzheimer_Spatial")
+
+@pytest.fixture(scope="module")
+def spatial_alzheimers_identify_relevant_instructions():
+    return read_config_identify_relevant_instructions("Alzheimer_Spatial")
+
+@pytest.fixture(scope="module")
+def spatial_parkinson_identify_original_instructions():
+    return read_config_identify_original_instructions("Parkinson_Spatial")
+
+@pytest.fixture(scope="module")
+def spatial_parkinson_identify_relevant_instructions():
+    return read_config_identify_relevant_instructions("Parkinson_Spatial")
+
+@pytest.fixture(scope="module")
 def step_callback():
     total_tokens = {**DEFAULT_TOKEN_USAGE}
 

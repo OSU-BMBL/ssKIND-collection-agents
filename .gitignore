@@ -195,3 +195,6 @@ cython_debug/
 
 # logs
 logs/*.log
+
+# reference ignore
+reference_ignore/*

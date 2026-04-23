@@ -28,7 +28,11 @@ Your task is to determine:
 ### **Instructions**
 1. If the paper is preprint version and there is not public link provided, you should assume the data is not publicly accessible.
 2. If In **Data Availability** section, the data is described as **available upon request** or uses similar language, you should assume the data is not publicly accessible.
-3. You should evaluate if **the data** is original and accessible, not the entire paper.
+3. **Mixed human and non-human data**
+   * If the study includes both **human** and **non-human (e.g., mouse)** data:
+     * Evaluate accessibility based on **any publicly available dataset**.
+     * If the non-human data is publicly accessible, classify the study as **having publicly accessible data**, even if the human data is restricted.
+4. You should evaluate if **the data** is original and accessible, not the entire paper.
 
 ### **Important Instructions**
 {important_instructions}

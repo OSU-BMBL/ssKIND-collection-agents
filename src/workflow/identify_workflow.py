@@ -79,7 +79,7 @@ class IdentifyWorkflow:
             IdentifyState: The state containing the results of the identification process.
         """
         title, abstract, is_preprint = self.paper_retriever.query_title_abstract_ispreprint(pmid) # query_title_abstract_ispreprint(pmid)
-        if not title or not abstract or is_preprint:
+        if not title and not abstract: # or is_preprint:
             return False
         res, html_content = self.paper_retriever.query_full_text(pmid) # query_full_text(pmid)
         if not res or not html_content:

@@ -6,7 +6,8 @@ import math
 import xml.etree.ElementTree as ET
 
 from src.database.pmid_paper_db import PMIDPaperDB
-from .article_retriever import ArticleRetriever
+# from .article_retriever import ArticleRetriever
+from .pubmed_fulltext import PubMedFullTextRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -197,10 +198,9 @@ def query_full_text(pmid: str) -> tuple[bool, str | None]:
     Raises:
         Exception: If there is an error during the request.
     """
-    retriever = ArticleRetriever()
-    res, html_content, _ =retriever.request_article(pmid)
-
-    return res, html_content
+    pubmed_fulltext_retriever = PubMedFullTextRetriever()
+    full_text_result = pubmed_fulltext_retriever.retrieve(pmid)
+    return full_text_result.code < 400, full_text_result.content
 
 
 class PubMedPaperRetriever:
@@ -261,7 +261,9 @@ class PubMedPaperRetriever:
         Returns:
             tuple: A tuple containing a boolean indicating success and the full text content (html format) or None if not found.
         """
-        html_content = self.db.select_paper_html_content(pmid)
+        # ========================================================================
+        # fixme: [fengsh] temporarily disable the database query for full text
+        html_content = None # self.db.select_paper_html_content(pmid)
         if html_content is not None:
             return True, html_content
         res, html_content = query_full_text(pmid)
