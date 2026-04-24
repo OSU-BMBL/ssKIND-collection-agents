@@ -1,4 +1,6 @@
-from bs4 import BeautifulSoup, Tag
+import re
+
+from bs4 import BeautifulSoup, FeatureNotFound, Tag
 from typing import Callable, Optional
 from typing import List, Optional, Dict
 
@@ -509,50 +511,305 @@ class PMCHtmlTableParser(object):
         return sections
 
 
+class XmlTableParser:
+    """Parser for JATS/NLM XML returned by NCBI efetch (db=pmc, retmode=xml).
+
+    References are skipped (excluded from output) but traversal continues —
+    sections after references (supplementary material, acknowledgements, etc.)
+    are still captured.
+    """
+
+    SKIP_SECTION_KEYWORDS = ["reference", "references"]
+    TEXT_BLOCK_TAGS = {"p", "list", "boxed-text", "disp-quote"}
+
+    @staticmethod
+    def _is_xml_content(content: str) -> bool:
+        if not content:
+            return False
+        lowered = content.lstrip().lower()
+        if lowered.startswith("<?xml"):
+            return True
+        if "<!doctype article" in lowered:
+            return True
+        markers = ["<article-meta", "<article-title", "<table-wrap", "<sec ", "<sec>", "<abstract>", "<abstract "]
+        return any(m in lowered for m in markers)
+
+    def _parse_xml(self, content: str) -> Optional[BeautifulSoup]:
+        if not self._is_xml_content(content):
+            return None
+        try:
+            return BeautifulSoup(content, "xml")
+        except FeatureNotFound:
+            return BeautifulSoup(content, "html.parser")
+
+    @staticmethod
+    def _clean_text(text: str) -> str:
+        if not text:
+            return ""
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _extract_abstract_text(self, soup: BeautifulSoup) -> Optional[str]:
+        article_meta = soup.find("article-meta")
+        abstract = article_meta.find("abstract") if article_meta else soup.find("abstract")
+        if abstract is None:
+            return None
+
+        text_parts = []
+        sections = abstract.find_all("sec", recursive=False)
+        if sections:
+            for sec in sections:
+                title_tag = sec.find("title", recursive=False)
+                sec_title = self._clean_text(title_tag.get_text(" ", strip=True)) if title_tag else ""
+                paras = [
+                    self._clean_text(p.get_text(" ", strip=True))
+                    for p in sec.find_all("p")
+                    if self._clean_text(p.get_text(" ", strip=True))
+                ]
+                sec_text = " ".join(paras)
+                if sec_title and sec_text:
+                    text_parts.append(f"{sec_title}: {sec_text}")
+                elif sec_text:
+                    text_parts.append(sec_text)
+        else:
+            paras = [
+                self._clean_text(p.get_text(" ", strip=True))
+                for p in abstract.find_all("p")
+                if self._clean_text(p.get_text(" ", strip=True))
+            ]
+            if paras:
+                text_parts.extend(paras)
+            else:
+                fallback = self._clean_text(abstract.get_text(" ", strip=True))
+                if fallback:
+                    text_parts.append(fallback)
+
+        res = "\n".join(text_parts).strip()
+        return res if res else None
+
+    def _extract_table_caption(self, table_wrap: Tag) -> str:
+        label_tag = table_wrap.find("label", recursive=False)
+        caption_tag = table_wrap.find("caption", recursive=False) or table_wrap.find("caption")
+        label = self._clean_text(label_tag.get_text(" ", strip=True)) if label_tag else ""
+        caption = self._clean_text(caption_tag.get_text(" ", strip=True)) if caption_tag else ""
+        if label and caption:
+            return caption if caption.lower().startswith(label.lower()) else f"{label} {caption}".strip()
+        return label or caption
+
+    def _extract_table_footnote(self, table_wrap: Tag) -> str:
+        foot = table_wrap.find("table-wrap-foot")
+        if foot is None:
+            return ""
+        parts, seen = [], set()
+        fn_tags = foot.find_all("fn")
+        if fn_tags:
+            for fn in fn_tags:
+                text = self._clean_text(fn.get_text(" ", strip=True))
+                if text and text not in seen:
+                    seen.add(text)
+                    parts.append(text)
+        else:
+            text = self._clean_text(foot.get_text(" ", strip=True))
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+
+    def extract_tables(self, content: str):
+        soup = self._parse_xml(content)
+        if soup is None:
+            return []
+        tables = []
+        for tw in soup.find_all("table-wrap"):
+            table_tag = tw.find("table")
+            if table_tag is None:
+                continue
+            df = convert_html_table_to_dataframe(str(table_tag))
+            if df is None:
+                continue
+            tables.append({
+                "caption": self._extract_table_caption(tw),
+                "footnote": self._extract_table_footnote(tw),
+                "table": df,
+                "raw_tag": str(tw),
+            })
+        if tables:
+            return tables
+        for table_tag in soup.find_all("table"):
+            df = convert_html_table_to_dataframe(str(table_tag))
+            if df is None:
+                continue
+            tables.append({"caption": "", "footnote": "", "table": df, "raw_tag": str(table_tag)})
+        return tables
+
+    def extract_title(self, content: str) -> Optional[str]:
+        soup = self._parse_xml(content)
+        if soup is None:
+            return None
+        article_meta = soup.find("article-meta")
+        if article_meta is not None:
+            title_tag = article_meta.find("article-title")
+            if title_tag is not None:
+                title = self._clean_text(title_tag.get_text(" ", strip=True))
+                if title:
+                    return title
+        for title_tag in soup.find_all("article-title"):
+            if title_tag.find_parent("ref-list") or title_tag.find_parent("citation"):
+                continue
+            title = self._clean_text(title_tag.get_text(" ", strip=True))
+            if title:
+                return title
+        return None
+
+    def extract_abstract(self, content: str) -> Optional[str]:
+        soup = self._parse_xml(content)
+        if soup is None:
+            return None
+        return self._extract_abstract_text(soup)
+
+    def _section_is_skipped(self, title: str, sec_type: str) -> bool:
+        key = f"{title} {sec_type}".lower()
+        return any(kw in key for kw in self.SKIP_SECTION_KEYWORDS)
+
+    def _extract_section_content(self, section: Tag) -> str:
+        parts, seen = [], set()
+        for child in section.children:
+            if not isinstance(child, Tag):
+                continue
+            if child.name in {"title", "sec"}:
+                continue
+            if child.name == "table-wrap":
+                table_tag = child.find("table")
+                if table_tag is None:
+                    continue
+                df = convert_html_table_to_dataframe(str(table_tag))
+                if df is None:
+                    continue
+                md = dataframe_to_markdown(df).strip()
+                if md and md not in seen:
+                    seen.add(md)
+                    parts.append(md)
+                continue
+            if child.name in self.TEXT_BLOCK_TAGS:
+                text = self._clean_text(child.get_text(" ", strip=True))
+                if text and text not in seen:
+                    seen.add(text)
+                    parts.append(text)
+                continue
+            text = self._clean_text(child.get_text(" ", strip=True))
+            if text and text not in seen:
+                seen.add(text)
+                parts.append(text)
+        return "\n".join(parts).strip()
+
+    def _extract_sections_from_sec(self, sec: Tag) -> List[Dict[str, str]]:
+        sections = []
+        title_tag = sec.find("title", recursive=False)
+        section_title = self._clean_text(title_tag.get_text(" ", strip=True)) if title_tag else ""
+        sec_type = self._clean_text(sec.attrs.get("sec-type", ""))
+
+        # Skip this section's content but return empty so the caller continues to siblings
+        if self._section_is_skipped(section_title, sec_type):
+            return sections
+
+        if not section_title:
+            section_title = sec_type or self._clean_text(sec.attrs.get("id", ""))
+
+        content = self._extract_section_content(sec)
+        if section_title and content:
+            sections.append({"section": section_title, "content": content})
+
+        for child_sec in sec.find_all("sec", recursive=False):
+            sections.extend(self._extract_sections_from_sec(child_sec))
+
+        return sections
+
+    def extract_sections(self, content: str) -> Optional[List[Dict[str, str]]]:
+        soup = self._parse_xml(content)
+        if soup is None:
+            return None
+
+        sections: List[Dict[str, str]] = []
+        abstract_text = self._extract_abstract_text(soup)
+        if abstract_text:
+            sections.append({"section": "Abstract", "content": abstract_text})
+
+        body_tag = soup.find("body")
+        if body_tag is not None:
+            for sec in body_tag.find_all("sec", recursive=False):
+                sections.extend(self._extract_sections_from_sec(sec))
+
+        # Floating table-wraps outside <body> (e.g. in <floats-group>)
+        all_tws = soup.find_all("table-wrap")
+        body_tws = set(body_tag.find_all("table-wrap")) if body_tag else set()
+        floating = [t for t in all_tws if t not in body_tws]
+        table_parts, seen_tables = [], set()
+        for tw in floating:
+            table_tag = tw.find("table")
+            if table_tag is None:
+                continue
+            df = convert_html_table_to_dataframe(str(table_tag))
+            if df is None:
+                continue
+            caption = self._extract_table_caption(tw)
+            md = dataframe_to_markdown(df).strip()
+            if not md or md in seen_tables:
+                continue
+            seen_tables.add(md)
+            table_parts.append(f"{caption}\n{md}".strip() if caption else md)
+        if table_parts:
+            sections.append({"section": "Tables", "content": "\n\n".join(table_parts)})
+
+        return sections if sections else None
+
+
 class HtmlTableExtractor(object):
     def __init__(self):
-        self.parsers = [
+        self.xml_parser = XmlTableParser()
+        self.html_parsers = [
             PMCHtmlTableParser(),
             HtmlTableParser(),
         ]
 
+    def _get_parsers(self, content: str):
+        if XmlTableParser._is_xml_content(content):
+            return [self.xml_parser]
+        return self.html_parsers
+
     def extract_tables(self, html: str):
         tables = []
-        for parser in self.parsers:
+        for parser in self._get_parsers(html):
             tables = parser.extract_tables(html)
             if tables and len(tables) > 0:
                 break
 
         tables = HtmlTableExtractor._remove_duplicate(tables)
         return tables
-    
+
     def extract_title(self, html: str):
-        for parser in self.parsers:
+        for parser in self._get_parsers(html):
             title = parser.extract_title(html)
             if title is not None:
                 return escape_braces_for_format(title)
-            
+
         return None
 
     def extract_abstract(self, html: str):
-        for parser in self.parsers:
+        for parser in self._get_parsers(html):
             abstract = parser.extract_abstract(html)
             if abstract is not None:
                 return escape_braces_for_format(abstract)
 
         return None
-    
+
     def extract_data_availability(self, html: str):
         return extract_data_availability(html)
-    
+
     def extract_methods(self, html: str):
         return extract_methods(html)
 
     def extract_sections(self, html: str) -> dict | None:
-        for parser in self.parsers:
+        for parser in self._get_parsers(html):
             sections = parser.extract_sections(html)
             if sections is not None:
-                # return sections
                 for s in sections:
                     if "section" in s:
                         s["section"] = escape_braces_for_format(s["section"])

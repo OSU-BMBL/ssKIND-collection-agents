@@ -2,7 +2,11 @@
 
 ## Project Purpose
 
-Automated biomedical literature curation pipeline that identifies PubMed papers relevant to neurological disease research (Alzheimer's, Parkinson's, MS, ALS, etc.). For each scope, it filters papers that have **original, publicly accessible** single-cell RNA-seq or spatial transcriptomics data.
+Automated biomedical literature curation and single-cell data processing system for neurological disease research (Alzheimer's, Parkinson's, MS, ALS, etc.).
+
+**Pipeline 1** screens PubMed papers and filters those with original, publicly accessible single-cell RNA-seq or spatial transcriptomics data.
+
+**Pipeline 2** processes each accepted dataset end-to-end: metadata extraction → data download → format conversion → QC → doublet removal → cell-type annotation → atlas assembly.
 
 ## Environment Setup
 
@@ -18,6 +22,7 @@ cp .env.template .env
 ```
 
 ### Required env vars (`.env`)
+
 | Variable | Purpose |
 |---|---|
 | `OPENAI_4O_API_KEY` | Azure OpenAI API key |
@@ -27,16 +32,20 @@ cp .env.template .env
 | `OPENAI_4O_MODEL` | Model name (e.g. `gpt-4o`) |
 | `OPENAI_MAX_OUTPUT_TOKENS` | Max output tokens (default `16380`) |
 | `BASE_URL` | NetToolkit server URL (default `http://127.0.0.1:3001`) |
-| `DATA_FOLDER` | Folder for SQLite cache DB (default: project root) |
+| `DATA_FOLDER` | Root folder for all pipeline data (default: project root) |
+| `HUMAN_GENE_MART_PATH` | Path to human gene-ID→symbol TSV (columns: gene_ids, gene_symbols) |
+| `MOUSE_GENE_MART_PATH` | Path to mouse gene-ID→symbol TSV |
+| `HUMAN_MAPMYCELLS_TAXONOMY_PATH` | Path to human MapMyCells precomputed stats file |
+| `MOUSE_MAPMYCELLS_TAXONOMY_PATH` | Path to mouse MapMyCells precomputed stats file |
 
 ### NetToolkit (required for full-text retrieval)
-Full-text download requires a local Docker service:
+
 ```bash
 docker pull frankfeng78/nettoolkit:0.1.7
 docker run -d --name nettoolkit -p3001:3001 frankfeng78/nettoolkit:0.1.7
 ```
 
-## Running the Pipeline
+## Running Pipeline 1 (Paper Screening)
 
 ```bash
 # Run a single scope
@@ -45,7 +54,7 @@ python app_script.py -s Alzheimer_SingleCell
 # List available scopes
 python app_script.py --help
 
-# Run multiple scopes (edit scopes_to_run list first)
+# Run multiple scopes
 python run_all_scopes.py
 ```
 
@@ -53,78 +62,117 @@ Output is appended to `results.txt` — one line per PMID indicating relevance.
 
 ## Running Tests
 
-System tests consume real API tokens and are skipped by default. To run one:
-1. Comment out `@pytest.mark.skip()` in the test file
-2. Run: `python -m pytest system_tests/test_identify_original_step.py`
+System tests that call real APIs or LLMs are skipped by default.
+
+```bash
+# Run all non-LLM tests
+eval $(poetry env activate)
+python -m pytest system_tests/
+
+# Enable an LLM test
+# 1. Remove or comment out @pytest.mark.skip() in the test file
+# 2. Run the specific test file
+python -m pytest system_tests/test_metadata_extractor_step.py
+```
 
 ## Architecture
 
-### Pipeline Flow (`src/workflow/identify_workflow.py`)
+### Pipeline 1 — Paper Screening
 
-LangGraph two-step workflow executed per PMID:
+LangGraph two-step workflow per PMID (`src/workflow/identify_workflow.py`):
 
 ```
 START
   └─> IdentifyOriginalDataStep   # Is data original & publicly accessible?
         ├─ No  ──> END (rejected)
-        └─ Yes ──> IdentifyRelevanceStep  # Is it relevant to the research scope?
+        └─ Yes ──> IdentifyRelevanceStep  # Is it relevant to the scope?
                         └─> END
 ```
 
 A paper is accepted only if **both** steps return `True`.
 
-### Key Components
+**Key components:**
 
 | Path | Role |
 |---|---|
 | `app_script.py` | CLI entry point; wires LLM, config, and workflow |
-| `run_all_scopes.py` | Batch runner; invokes `app_script.py` per scope via subprocess |
-| `config/scope_config.yaml` | Per-scope PubMed query, date range, and LLM instructions |
+| `run_all_scopes.py` | Batch runner; invokes `app_script.py` per scope |
+| `config/scope_config.yaml` | Per-scope PubMed query, date range, LLM instructions |
 | `src/config_utils.py` | Reads `scope_config.yaml` |
-| `src/workflow/identify_workflow.py` | `IdentifyWorkflow` class + `identify_workflow()` helper |
+| `src/workflow/identify_workflow.py` | `IdentifyWorkflow` + `identify_workflow()` helper |
 | `src/agents/identify_original_step.py` | Step 1: originality & accessibility check |
 | `src/agents/identify_relevant_step.py` | Step 2: relevance check |
 | `src/agents/common_agent.py` | Single-call LLM agent with structured output |
-| `src/agents/common_agent_2step.py` | Two-call agent: CoT reasoning then structured extraction |
+| `src/agents/common_agent_2step.py` | Two-call agent: CoT then structured extraction |
 | `src/agents/common_step.py` | Abstract base class for workflow steps |
 | `src/agents/agent_utils.py` | `IdentifyState` TypedDict, token usage helpers |
-| `src/paper_query/pubmed_query.py` | PubMed NCBI eUtils queries; `PubMedPaperRetriever` (with DB cache) |
+| `src/paper_query/pubmed_query.py` | PubMed NCBI eUtils queries + SQLite cache |
 | `src/paper_query/article_retriever.py` | Full-text HTML download via NetToolkit |
 | `src/database/pmid_paper_db.py` | SQLite cache for title/abstract/HTML per PMID |
-| `src/log_utils.py` | Logger initialization |
+
+### Pipeline 2 — Data Processing
+
+File-based pipeline where each step reads its inputs and writes its outputs to disk under `$DATA_FOLDER/`. Steps are idempotent — they skip if their output files already exist.
+
+**Directory layout:**
+
+```
+$DATA_FOLDER/
+  0.metadata/          # {pmid}.json — extracted dataset list per paper
+  1.manifest/          # {dataset_id}.json — file manifest per dataset
+  2.raw/               # {dataset_id}/ — downloaded files + conversion_config.json
+  3.h5ad/              # {dataset_id}.h5ad — converted human h5ad
+  3.Mh5ad/             # {dataset_id}.h5ad — converted mouse h5ad
+  4.qc/                # {dataset_id}_annotated.h5ad, _qc_report.json,
+                       #   _thresholds.json, {dataset_id}.h5ad (filtered)
+  5.doublet/           # {dataset_id}.h5ad, _doublet_result.json,
+                       #   _annotation_config.json, _labels.csv
+  6.labeled/           # {dataset_id}.h5ad — with cell_type column
+  7.atlas_clean/       # {dataset_id}.h5ad — cleaned, ready for atlas
+  8.atlas/             # {atlas_name}.h5ad — final merged atlas
+```
+
+**Step sequence:**
+
+| Step | Class | Location | LLM | Input → Output |
+|---|---|---|---|---|
+| A0 | `MetadataExtractorStep` | `src/agents/` | Yes | paper full-text → `0.metadata/{pmid}.json` |
+| A1 | `RepositoryAnalystStep` | `src/agents/` | Yes | metadata → `1.manifest/{dataset_id}.json` |
+| A2 | `DataDownloaderStep` | `src/data_processing/` | No | manifest → `2.raw/{dataset_id}/` |
+| B1 | `FormatAnalyzerStep` | `src/agents/` | Yes | raw files → `2.raw/{id}/conversion_config.json` |
+| B2 | `FormatConverterStep` | `src/data_processing/` | No | raw files → `3.h5ad/` or `3.Mh5ad/` |
+| C1 | `CountQCStep` | `src/data_processing/` | No | h5ad → `4.qc/_annotated.h5ad` + `_qc_report.json` |
+| C2 | `QCReviewerStep` | `src/agents/` | Yes | QC report → `4.qc/_thresholds.json` |
+| C3 | `QCFilterStep` | `src/data_processing/` | No | annotated h5ad + thresholds → `4.qc/{id}.h5ad` |
+| D | `DoubletDetectionStep` | `src/data_processing/` | No | QC h5ad → `5.doublet/{id}.h5ad` |
+| E1 | `AnnotationConfigStep` | `src/agents/` | Yes | conversion config → `5.doublet/_annotation_config.json` |
+| E2 | `CellTypeAnnotationStep` | `src/data_processing/` | No | doublet h5ad → `5.doublet/_labels.csv` |
+| F | `LabelMergerStep` | `src/data_processing/` | No | doublet h5ad + labels → `6.labeled/{id}.h5ad` |
+| G | `AtlasCleanerStep` | `src/data_processing/` | No | labeled h5ad → `7.atlas_clean/{id}.h5ad` |
+| H | `AtlasMergerStep` | `src/data_processing/` | No | all cleaned h5ad → `8.atlas/{name}.h5ad` |
 
 ### Agent Variants
 
-- `CommonAgent` — single LLM call, `with_structured_output(schema)`; retries up to 5× with `tenacity`
-- `CommonAgentTwoSteps` — two LLM calls: free-form CoT first, then structured output using that reasoning
-- `CommonAgentTwoChainSteps` — variant of above where the final step uses a dedicated extraction prompt (rather than the original system prompt)
+- `CommonAgent` — single LLM call with `with_structured_output(schema)`; retries up to 5× via `tenacity`
+- `CommonAgentTwoSteps` — two LLM calls: free-form CoT first, then structured extraction
+- `CommonAgentTwoChainSteps` — variant where the extraction step uses a dedicated prompt
 
-`two_steps_agent=True` in `IdentifyWorkflow` selects `CommonAgentTwoChainSteps` for both steps.
+`two_steps_agent=True` in `IdentifyWorkflow` selects `CommonAgentTwoChainSteps`.
 
-### State (`IdentifyState`)
+### LLM Prompt Conventions
 
-TypedDict passed through the LangGraph graph:
-- `pmid`, `title`, `abstract`, `content` (full text plain), `research_goal`
-- `identify_original_instructions`, `identify_relevant_instructions` (from config)
-- `original: bool`, `relevant: bool` (set by each step)
-- `step_output_callback` (optional; used by `app_script.py` for logging)
+- System prompts use `ChatPromptTemplate.from_template()`
+- Curly braces `{}` in non-template strings must be escaped before passing to LangChain
+- All structured output schemas are Pydantic `BaseModel` subclasses with a `reasoning_process` field
+- LLM steps are idempotent: they load from disk if their output JSON already exists
 
 ### Caching
 
-`PubMedPaperRetriever` wraps raw query functions and caches results in a SQLite DB at `$DATA_FOLDER/database/pmid_paper.db`. This avoids redundant API/network calls when re-running.
+- **Pipeline 1**: `PubMedPaperRetriever` caches title/abstract/HTML in SQLite at `$DATA_FOLDER/database/pmid_paper.db`
+- **Pipeline 2**: every step writes a JSON result file alongside its h5ad output; presence of both files triggers the skip-if-done guard
 
-## Adding a New Scope
+## Adding a New Scope (Pipeline 1)
 
-1. Add a new entry to `config/scope_config.yaml` with:
-   - `query`: PubMed search string
-   - `mindate` / `maxdate`: date range (`"YYYY/MM/DD"`)
-   - `identify_original_instructions`: criteria for Step 1
-   - `identify_relevant_instructions`: criteria for Step 2
-2. Optionally add the scope name to `scopes_to_run` in `run_all_scopes.py`
+1. Add a new entry to `config/scope_config.yaml` with `query`, `mindate`, `maxdate`, `identify_original_instructions`, `identify_relevant_instructions`
+2. Optionally add the name to `scopes_to_run` in `run_all_scopes.py`
 3. Run: `python app_script.py -s <NewScopeName>`
-
-## LLM Prompt Conventions
-
-- System prompts are built with `ChatPromptTemplate.from_template()`
-- Curly braces `{}` in non-template strings must be escaped as `()`  before passing to LangChain (see `system_prompt.replace("{", "(")` in agent code)
-- Structured output schemas are Pydantic `BaseModel` subclasses with a `reasoning_process` field and a boolean result field

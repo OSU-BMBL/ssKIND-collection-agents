@@ -64,14 +64,14 @@ class PubMedFullTextRetriever:
     ) -> None:
         self.email = email or os.getenv("NCBI_EMAIL")
         self.tool = tool
-        self.api_key = api_key
+        self.api_key = api_key or os.getenv("NCBI_API_KEY")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.session = session or requests.Session()
         self.session.headers.update(self._default_headers())
 
     def retrieve(self, pmid: str) -> FullTextResult:
-        """Return HTML full text. Try PMC via E-Utility first, fall back to ArticleRetriever."""
+        """Return full text. Try PMC via efetch XML first, fall back to ArticleRetriever."""
         try:
             pmcid = self._find_pmcid(pmid)
         except Exception as exc:
@@ -79,28 +79,41 @@ class PubMedFullTextRetriever:
             pmcid = None
 
         if pmcid:
-            result = self._fetch_html_with_recaptcha_retry(pmid, pmcid)
-            if result.code < 400 and not _looks_like_recaptcha(result.content):
+            result = self._fetch_xml_via_efetch(pmid, pmcid)
+            if result.code < 400 and result.content:
                 return result
             logger.warning(
-                "PMC HTML fetch failed for %s (%s): code=%s — falling back to ArticleRetriever",
+                "efetch XML failed for %s (%s): code=%s — falling back to ArticleRetriever",
                 pmid, pmcid, result.code,
             )
 
         return self._fetch_html_with_article_retriever_recaptcha_retry(pmid)
 
-    def _fetch_html_with_recaptcha_retry(self, pmid: str, pmcid: str) -> FullTextResult:
-        result = self._fetch_html(pmid, pmcid)
-        for attempt in range(2, MAX_RECAPTCHA_RETRIES + 1):
-            if not _looks_like_recaptcha(result.content):
-                return result
-            logger.warning(
-                "PMC HTML for %s (%s) looks like a recaptcha/challenge page — retry %d/%d",
-                pmid, pmcid, attempt, MAX_RECAPTCHA_RETRIES,
+    def _fetch_xml_via_efetch(self, pmid: str, pmcid: str) -> FullTextResult:
+        pmc_number = pmcid[3:] if pmcid.startswith("PMC") else pmcid
+        params: Dict[str, str] = {
+            "db": "pmc",
+            "id": pmc_number,
+            "rettype": "full",
+            "retmode": "xml",
+        }
+        self._add_common_params(params)
+        url = f"{self.base_url}/efetch.fcgi"
+        response = self.session.get(url, params=params, timeout=self.timeout)
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as exc:
+            logger.warning("efetch XML failed for %s (%s): %s", pmid, pmcid, exc)
+            return FullTextResult(
+                pmid=pmid, pmcid=pmcid, content_type="application/xml",
+                content=None, url=url, code=response.status_code,
             )
-            time.sleep(RECAPTCHA_RETRY_DELAY_SECONDS)
-            result = self._fetch_html(pmid, pmcid)
-        return result
+        content = response.content.decode("utf-8", errors="replace")
+        logger.info("PubMedFullTextRetriever: fetched efetch XML for %s", pmcid)
+        return FullTextResult(
+            pmid=pmid, pmcid=pmcid, content_type="application/xml",
+            content=content, url=url, code=response.status_code,
+        )
 
     def _fetch_html_with_article_retriever_recaptcha_retry(self, pmid: str) -> FullTextResult:
         result = self._fetch_html_with_article_retriever(pmid)
@@ -114,23 +127,6 @@ class PubMedFullTextRetriever:
             time.sleep(RECAPTCHA_RETRY_DELAY_SECONDS)
             result = self._fetch_html_with_article_retriever(pmid)
         return result
-
-    def _fetch_html(self, pmid: str, pmcid: str) -> FullTextResult:
-        url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/"
-        response = self.session.get(url, timeout=self.timeout)
-        try:
-            response.raise_for_status()
-        except requests.exceptions.HTTPError as exc:
-            logger.warning("HTML fetch failed for %s (%s): %s", pmid, pmcid, exc)
-            return FullTextResult(
-                pmid=pmid, pmcid=pmcid, content_type="text/html",
-                content=response.content, url=url, code=response.status_code,
-            )
-        logger.info("PubMedFullTextRetriever: fetched HTML for %s", pmcid)
-        return FullTextResult(
-            pmid=pmid, pmcid=pmcid, content_type="text/html",
-            content=response.content.decode("utf-8"), url=url, code=response.status_code,
-        )
 
     def _fetch_html_with_article_retriever(self, pmid: str) -> FullTextResult:
         retriever = ArticleRetriever()

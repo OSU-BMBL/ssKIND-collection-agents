@@ -173,6 +173,10 @@ def query_title_abstract_ispreprint(pmid: str) -> tuple[str | None, str | None, 
             params=params,
         )
         root = ET.fromstring(result.content)
+
+        # FIXME: debug
+        str_content = ET.tostring(root, encoding="unicode")
+        
         is_preprint = False
         for article in root.findall(".//PubmedArticle"):
             title = article.findtext(".//ArticleTitle")
