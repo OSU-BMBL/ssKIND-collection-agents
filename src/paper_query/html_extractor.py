@@ -514,9 +514,10 @@ class PMCHtmlTableParser(object):
 class XmlTableParser:
     """Parser for JATS/NLM XML returned by NCBI efetch (db=pmc, retmode=xml).
 
-    References are skipped (excluded from output) but traversal continues —
-    sections after references (supplementary material, acknowledgements, etc.)
-    are still captured.
+    Captures the abstract, every <body> section, and back-matter sections from
+    <back> — acknowledgements (<ack>) and the labelled statements inside
+    <fn-group> such as "DATA AVAILABILITY" / "CODE AVAILABILITY". References
+    (<ref-list>) are skipped.
     """
 
     SKIP_SECTION_KEYWORDS = ["reference", "references"]
@@ -722,6 +723,67 @@ class XmlTableParser:
 
         return sections
 
+    @staticmethod
+    def _looks_like_heading(text: str) -> bool:
+        """Heuristic for <fn>-based back matter where the first <p> is the label
+        (e.g. "DATA AVAILABILITY") rather than a <title>: a short or all-caps
+        line acts as the heading."""
+        if not text:
+            return False
+        return text.isupper() or len(text.split()) <= 6
+
+    def _extract_fn_group_sections(self, fn_group: Tag) -> List[Dict[str, str]]:
+        """Turn each <fn> in a back-matter <fn-group> into a section.
+
+        These footnotes carry labelled statements (DATA AVAILABILITY, CODE
+        AVAILABILITY, ACCESSION CODES, ...) where the first <p> is the heading
+        and the remaining <p> elements are the body. A <label>, when present,
+        takes precedence as the heading.
+        """
+        sections: List[Dict[str, str]] = []
+        for fn in fn_group.find_all("fn", recursive=False):
+            label_tag = fn.find("label", recursive=False)
+            paras = fn.find_all("p", recursive=False)
+
+            title = ""
+            body_paras = paras
+            if label_tag:
+                title = self._clean_text(label_tag.get_text(" ", strip=True))
+            elif len(paras) >= 2:
+                first = self._clean_text(paras[0].get_text(" ", strip=True))
+                if self._looks_like_heading(first):
+                    title = first
+                    body_paras = paras[1:]
+
+            if not title:
+                title = self._clean_text(fn.attrs.get("fn-type", "")) or "Note"
+            if self._section_is_skipped(title, ""):
+                continue
+
+            content = "\n".join(
+                t for t in (
+                    self._clean_text(p.get_text(" ", strip=True)) for p in body_paras
+                ) if t
+            ).strip()
+            if content:
+                sections.append({"section": title, "content": content})
+        return sections
+
+    def _extract_back_sections(self, back: Tag) -> List[Dict[str, str]]:
+        """Back-matter sections: acknowledgements, data/code availability,
+        supplementary material, etc. References (<ref-list>) are skipped."""
+        sections: List[Dict[str, str]] = []
+        for child in back.find_all(recursive=False):
+            if not isinstance(child, Tag):
+                continue
+            if child.name == "ref-list":
+                continue
+            if child.name == "fn-group":
+                sections.extend(self._extract_fn_group_sections(child))
+            elif child.name in {"ack", "sec", "notes"}:
+                sections.extend(self._extract_sections_from_sec(child))
+        return sections
+
     def extract_sections(self, content: str) -> Optional[List[Dict[str, str]]]:
         soup = self._parse_xml(content)
         if soup is None:
@@ -736,6 +798,11 @@ class XmlTableParser:
         if body_tag is not None:
             for sec in body_tag.find_all("sec", recursive=False):
                 sections.extend(self._extract_sections_from_sec(sec))
+
+        # Back matter: acknowledgements, data availability, etc. (skip references)
+        back_tag = soup.find("back")
+        if back_tag is not None:
+            sections.extend(self._extract_back_sections(back_tag))
 
         # Floating table-wraps outside <body> (e.g. in <floats-group>)
         all_tws = soup.find_all("table-wrap")

@@ -145,6 +145,7 @@ class MetadataExtractorStep:
         or None if the LLM call failed.
         Skips the LLM call and reads from disk if the output already exists.
         """
+        self.last_token_usage = None
         out_path = self._output_path(pmid)
 
         if os.path.exists(out_path):
@@ -181,7 +182,7 @@ class MetadataExtractorStep:
             full_text=full_text,
         )
         agent = CommonAgent(llm=self.llm)
-        res, _, _, _ = agent.go(
+        res, _, token_usage, _ = agent.go(
             system_prompt=system_prompt,
             instruction_prompt=(
                 "Identify every distinct dataset in this paper. "
@@ -189,6 +190,7 @@ class MetadataExtractorStep:
             ),
             schema=MetadataExtractionResult,
         )
+        self.last_token_usage = token_usage
         return res
 
     @staticmethod

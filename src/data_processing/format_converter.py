@@ -26,6 +26,8 @@ import pandas as pd
 import scanpy as sc
 from scipy import sparse
 
+from .archive_utils import resolve_matrix_inputs, sample_name_from_path
+
 logger = logging.getLogger(__name__)
 
 CONVERSION_CONFIG_FILENAME = "conversion_config.json"
@@ -34,6 +36,21 @@ CONVERSION_RESULT_FILENAME = "conversion_result.json"
 RAW_SUBDIR = "2.raw"
 HUMAN_H5AD_SUBDIR = "3.h5ad"
 MOUSE_H5AD_SUBDIR = "3.Mh5ad"
+
+
+def _unique_sample_names(paths: list) -> list:
+    """Sample label per path, disambiguating any collisions with a suffix."""
+    names = [sample_name_from_path(p) for p in paths]
+    seen: dict = {}
+    out = []
+    for n in names:
+        if n in seen:
+            seen[n] += 1
+            out.append(f"{n}_{seen[n]}")
+        else:
+            seen[n] = 0
+            out.append(n)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -218,8 +235,18 @@ class SingleCellConverter:
         dataset_id: str,
         pmid: str,
         compression: str = "gzip",
+        keep_obs: tuple = (),
     ) -> None:
+        # Reset obs to a clean frame, preserving only the requested columns
+        # (e.g. "sample" for merged multi-sample datasets).
+        preserved = {
+            col: adata.obs[col].values
+            for col in keep_obs
+            if col in adata.obs.columns
+        }
         adata.obs = pd.DataFrame(index=adata.obs_names)
+        for col, vals in preserved.items():
+            adata.obs[col] = vals
         adata.obs["Dataset_id"] = dataset_id
         adata.obs["Pubmed_id"] = pmid
         if adata.X is None:
@@ -252,6 +279,61 @@ class SingleCellConverter:
             "log-transformed" if self.looks_logged(adata) else "not log-transformed"
         )
         self.save_h5ad(adata, output_path, dataset_id, pmid)
+
+    def convert_many(
+        self,
+        input_paths: list,
+        output_path: str,
+        dataset_id: str,
+        pmid: str,
+        data_type: str,
+        sample_names: list,
+        mapping_dict: Optional[dict] = None,
+        drop_empty: bool = True,
+    ) -> None:
+        """Read several per-sample matrices, tag and merge into one AnnData.
+
+        Each cell gets an `obs["sample"]` label and a unique barcode. Empty
+        (zero-count) droplets are dropped per sample first — essential for raw
+        Cell Ranger matrices, a no-op for already-filtered ones. Gene-symbol
+        mapping is applied once, after the merge.
+        """
+        adatas = []
+        for path, sample in zip(input_paths, sample_names):
+            adata = self.read_data(path, data_type)
+            if drop_empty:
+                n_before = adata.n_obs
+                sc.pp.filter_cells(adata, min_counts=1)
+                logger.info(
+                    "convert_many: %s %s → %s (dropped %d empty droplets)",
+                    sample, n_before, adata.n_obs, n_before - adata.n_obs,
+                )
+            adata.obs["sample"] = sample
+            adatas.append(adata)
+
+        merged = ad.concat(
+            adatas,
+            join="outer",
+            merge="same",
+            keys=list(sample_names),
+            index_unique="-",
+            fill_value=0,
+        )
+        del adatas
+        logger.info(
+            "convert_many: merged %d sample(s) → %s for %s",
+            len(input_paths), merged.shape, dataset_id,
+        )
+
+        if mapping_dict:
+            merged = self.convert_to_symbol_counts(merged, mapping_dict)
+        merged.obs["normalization_status"] = (
+            "log-transformed" if self.looks_logged(merged) else "not log-transformed"
+        )
+        self.save_h5ad(
+            merged, output_path, dataset_id, pmid,
+            keep_obs=("sample", "normalization_status"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -345,39 +427,68 @@ class FormatConverterStep:
             return result
 
         primary_file = config.get("primary_file", "")
-        input_path = os.path.join(self.data_folder, RAW_SUBDIR, dataset_id, primary_file)
-        if not os.path.exists(input_path):
+        dataset_dir = os.path.join(self.data_folder, RAW_SUBDIR, dataset_id)
+        inputs = resolve_matrix_inputs(dataset_dir, config["data_type"], primary_file)
+        if not inputs:
             result = {
                 "dataset_id": dataset_id,
                 "status": "failed",
-                "message": f"Primary file not found: {input_path}",
+                "message": (
+                    f"Input file not found for {dataset_id} "
+                    f"(data_type={config['data_type']!r}, primary_file={primary_file!r})"
+                ),
                 "converted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
             self._write_result(result_path, result)
-            logger.error("FormatConverterStep: primary file missing for %s: %s", dataset_id, input_path)
+            logger.error(
+                "FormatConverterStep: could not resolve input for %s (primary_file=%r)",
+                dataset_id, primary_file,
+            )
             return result
+        logger.info(
+            "FormatConverterStep: resolved %d input(s) for %s (first: %s)",
+            len(inputs), dataset_id, inputs[0],
+        )
 
         mapping_dict = self._get_mapping(config)
         try:
-            self._converter.convert(
-                input_path=input_path,
-                output_path=output_path,
-                dataset_id=dataset_id,
-                pmid=config.get("pmid", ""),
-                data_type=config["data_type"],
-                mapping_dict=mapping_dict if config.get("gene_mapping_needed") else None,
-            )
+            if len(inputs) == 1:
+                self._converter.convert(
+                    input_path=inputs[0],
+                    output_path=output_path,
+                    dataset_id=dataset_id,
+                    pmid=config.get("pmid", ""),
+                    data_type=config["data_type"],
+                    mapping_dict=mapping_dict,
+                )
+            else:
+                sample_names = _unique_sample_names(inputs)
+                logger.info(
+                    "FormatConverterStep: merging %d samples for %s: %s",
+                    len(inputs), dataset_id, sample_names,
+                )
+                self._converter.convert_many(
+                    input_paths=inputs,
+                    output_path=output_path,
+                    dataset_id=dataset_id,
+                    pmid=config.get("pmid", ""),
+                    data_type=config["data_type"],
+                    sample_names=sample_names,
+                    mapping_dict=mapping_dict,
+                )
             result = {
                 "dataset_id": dataset_id,
                 "status": "success",
                 "output_path": output_path,
                 "data_type": config["data_type"],
                 "species": config.get("species"),
+                "n_samples": len(inputs),
                 "converted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
             self._write_result(result_path, result)
             logger.info(
-                "FormatConverterStep: converted %s → %s", dataset_id, output_path
+                "FormatConverterStep: converted %s → %s (%d sample(s))",
+                dataset_id, output_path, len(inputs),
             )
             return result
         except Exception as exc:

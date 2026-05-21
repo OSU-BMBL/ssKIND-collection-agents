@@ -134,6 +134,7 @@ class QCReviewerStep:
         Returns the thresholds dict, or None on failure.
         Skips LLM call if thresholds already exist on disk.
         """
+        self.last_token_usage = None
         thresholds_path = self._thresholds_path(dataset_id)
         if os.path.exists(thresholds_path):
             logger.info("QCReviewerStep: %s already reviewed, loading from disk", dataset_id)
@@ -226,7 +227,7 @@ class QCReviewerStep:
             ),
         )
         agent = CommonAgent(llm=self.llm)
-        res, _, _, _ = agent.go(
+        res, _, token_usage, _ = agent.go(
             system_prompt=system_prompt,
             instruction_prompt=(
                 "Review the QC metrics and decide the final filtering thresholds. "
@@ -234,6 +235,7 @@ class QCReviewerStep:
             ),
             schema=QCThresholdsResult,
         )
+        self.last_token_usage = token_usage
         return res
 
     @staticmethod

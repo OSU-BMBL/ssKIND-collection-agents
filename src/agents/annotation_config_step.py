@@ -109,6 +109,7 @@ class AnnotationConfigStep:
         Returns the config dict, or None on failure.
         Skips LLM if the config already exists.
         """
+        self.last_token_usage = None
         config_path = self._config_path(dataset_id)
         if os.path.exists(config_path):
             logger.info("AnnotationConfigStep: %s already configured, loading from disk", dataset_id)
@@ -201,7 +202,7 @@ class AnnotationConfigStep:
             n_cells_after_qc=n_cells_after_qc if n_cells_after_qc is not None else "unknown",
         )
         agent = CommonAgent(llm=self.llm)
-        res, _, _, _ = agent.go(
+        res, _, token_usage, _ = agent.go(
             system_prompt=system_prompt,
             instruction_prompt=(
                 "Decide whether to run MapMyCells annotation for this dataset. "
@@ -209,4 +210,5 @@ class AnnotationConfigStep:
             ),
             schema=AnnotationConfigResult,
         )
+        self.last_token_usage = token_usage
         return res
