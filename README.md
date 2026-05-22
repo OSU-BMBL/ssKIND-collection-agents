@@ -37,11 +37,11 @@ Then fill in the required variables:
 
 | Variable | Purpose |
 |---|---|
-| `OPENAI_4O_API_KEY` | Azure OpenAI API key |
-| `AZURE_OPENAI_4O_ENDPOINT` | Azure endpoint URL |
-| `OPENAI_4O_API_VERSION` | API version string |
-| `OPENAI_4O_DEPLOYMENT_NAME` | Azure deployment name |
-| `OPENAI_4O_MODEL` | Model name (e.g. `gpt-4o`) |
+| `OPENAI_API_KEY` | Azure OpenAI API key |
+| `AZURE_OPENAI_ENDPOINT` | Azure endpoint URL |
+| `OPENAI_API_VERSION` | API version string |
+| `OPENAI_DEPLOYMENT_NAME` | Azure deployment name |
+| `OPENAI_MODEL` | Model name (e.g. `gpt-4o`) |
 | `OPENAI_MAX_OUTPUT_TOKENS` | Max output tokens (default `16380`) |
 | `BASE_URL` | NetToolkit server URL (default `http://127.0.0.1:3001`) |
 
