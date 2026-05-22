@@ -60,6 +60,22 @@ python run_all_scopes.py
 
 Output is appended to `results.txt` — one line per PMID indicating relevance.
 
+## Running Pipeline 2 (Data Processing)
+
+```bash
+# Process one or more accepted PMIDs and merge into an atlas
+python app_processing.py -p 39578645 39607927 --atlas-name alzheimer
+
+# Process without the final atlas merge
+python app_processing.py -p 39578645 --skip-atlas
+
+# Override the data folder (default: DATA_FOLDER env var or project root)
+python app_processing.py -p 39578645 -o /path/to/data
+```
+
+Steps are idempotent — re-running the same PMID skips steps whose output files already exist.
+If full text cannot be fetched but `0.metadata/{pmid}.json` already exists on disk, the paper is still processed from the cached metadata.
+
 ## Running Tests
 
 System tests that call real APIs or LLMs are skipped by default.
@@ -151,6 +167,26 @@ $DATA_FOLDER/
 | G | `AtlasCleanerStep` | `src/data_processing/` | No | labeled h5ad → `7.atlas_clean/{id}.h5ad` |
 | H | `AtlasMergerStep` | `src/data_processing/` | No | all cleaned h5ad → `8.atlas/{name}.h5ad` |
 
+### Pipeline 2 — Implementation Details
+
+**Dataset ID format:** `{pmid}_{i:02d}` (e.g. `39578645_01`, `39578645_02`). Assigned by `MetadataExtractorStep._assign_dataset_ids()` at extraction time and used as the key for all downstream file paths.
+
+**ProcessingWorkflow internals:**
+- `ProcessingState` TypedDict carries only routing flags (`proceed`, `status`, `stopped_at`, `results`) — never the data itself.
+- Each node calls `self._record(state, step_name, result, proceed, token_usage)` which stores the step result, emits the optional `step_callback`, and sets `proceed`/`stopped_at`.
+- Conditional edges all call `_route(state)` → `"continue"` if `proceed` else `"stop"`.
+- `_accumulate(step)` folds each LLM step's `last_token_usage` into the running total. Every LLM step resets `self.last_token_usage = None` at the top of its public method so cache hits/skips contribute zero.
+- `_node_cell_type_annotate` is **best-effort**: annotation failure does not stop the chain — `LabelMergerStep` falls back to a "no labels" merge.
+- `_node_convert` stops the chain when `status == "requires_r_extraction"` or `"failed"` — RDS files that need R extraction cannot continue through the Python pipeline.
+
+**FormatConverterStep:**
+- Reads `2.raw/{dataset_id}/conversion_config.json` (written by `FormatAnalyzerStep`).
+- Routes human data to `3.h5ad/` and mouse data to `3.Mh5ad/`.
+- `SingleCellConverter.looks_logged()` heuristic: if all sampled values are ≤ 20.0 and non-integer, the data is treated as log1p-transformed (not raw counts).
+- Multi-sample datasets (multiple input files) are merged with `ad.concat()` after per-sample empty-droplet filtering; sample labels stored in `obs["sample"]`.
+
+**Gene mapping:** `SingleCellConverter.convert_to_symbol_counts()` maps Ensembl IDs → gene symbols using TSVs configured via `HUMAN_GENE_MART_PATH` / `MOUSE_GENE_MART_PATH`. Duplicate symbols after mapping are collapsed by summing counts.
+
 ### Agent Variants
 
 - `CommonAgent` — single LLM call with `with_structured_output(schema)`; retries up to 5× via `tenacity`
@@ -165,6 +201,12 @@ $DATA_FOLDER/
 - Curly braces `{}` in non-template strings must be escaped before passing to LangChain
 - All structured output schemas are Pydantic `BaseModel` subclasses with a `reasoning_process` field
 - LLM steps are idempotent: they load from disk if their output JSON already exists
+
+### Pipeline 1 — Implementation Details
+
+**IdentifyWorkflow graph order:** `START → identify_original_data → (if True) → identify_relevance → END`. The `self.steps` list is built in a different order from the graph edges — always trace the graph edges, not the list index.
+
+**`two_steps_agent=True`** in `IdentifyWorkflow` constructor switches both steps to `CommonAgentTwoChainSteps` (CoT call → dedicated extraction prompt) instead of the default single-call `CommonAgent`.
 
 ### Caching
 

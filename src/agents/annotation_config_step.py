@@ -25,6 +25,7 @@ from .common_agent import CommonAgent
 
 logger = logging.getLogger(__name__)
 
+METADATA_SUBDIR = "0.metadata"
 RAW_SUBDIR = "2.raw"
 QC_SUBDIR = "4.qc"
 DOUBLET_SUBDIR = "5.doublet"
@@ -58,9 +59,8 @@ Your task:
 
 **Dataset:** {dataset_id}
 **Species:** {species}
-**Technology:** {technology}
-**Data type:** {data_type}
-**Gene mapping done:** {gene_mapping_needed}
+**Technology / data type:** {technology}
+**Gene symbols available:** True  (FormatConverterStep always outputs gene symbols; gene_mapping_needed={gene_mapping_needed} only indicates whether Ensembl→symbol mapping was applied during conversion)
 **Normalization status:** {normalization_status}
 **Cells after QC:** {n_cells_after_qc}
 """)
@@ -173,6 +173,22 @@ class AnnotationConfigStep:
         with open(path) as f:
             return json.load(f)
 
+    def _load_metadata_technology(self, dataset_id: str) -> Optional[str]:
+        """Read the original technology string from 0.metadata/{pmid}.json."""
+        pmid = dataset_id.rsplit("_", 1)[0]
+        path = os.path.join(self.data_folder, METADATA_SUBDIR, f"{pmid}.json")
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path) as f:
+                meta = json.load(f)
+            for ds in meta.get("datasets", []):
+                if ds.get("dataset_id") == dataset_id:
+                    return ds.get("technology") or None
+        except Exception:
+            pass
+        return None
+
     def _load_n_cells_after_qc(self, dataset_id: str) -> Optional[int]:
         path = os.path.join(
             self.data_folder, QC_SUBDIR, f"{dataset_id}_filter_result.json"
@@ -192,11 +208,13 @@ class AnnotationConfigStep:
         conversion_config: dict,
         n_cells_after_qc: Optional[int],
     ) -> Optional[AnnotationConfigResult]:
+        # Prefer the original technology from metadata; fall back to data_type from
+        # conversion_config (e.g. "h5") which is a file format, not a modality.
+        technology = self._load_metadata_technology(dataset_id) or conversion_config.get("data_type", "unknown")
         system_prompt = ANNOTATION_CONFIG_SYSTEM_PROMPT.format(
             dataset_id=dataset_id,
             species=conversion_config.get("species", "unknown"),
-            technology=conversion_config.get("data_type", "unknown"),
-            data_type=conversion_config.get("data_type", "unknown"),
+            technology=technology,
             gene_mapping_needed=conversion_config.get("gene_mapping_needed", False),
             normalization_status=conversion_config.get("normalization_status", "unknown"),
             n_cells_after_qc=n_cells_after_qc if n_cells_after_qc is not None else "unknown",

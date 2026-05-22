@@ -32,6 +32,7 @@ from ..data_processing.archive_utils import resolve_input_path
 logger = logging.getLogger(__name__)
 
 MANIFEST_SUBDIR = "1.manifest"
+METADATA_SUBDIR = "0.metadata"
 RAW_SUBDIR = "2.raw"
 DOWNLOAD_STATUS_FILENAME = "download_status.json"
 CONVERSION_CONFIG_FILENAME = "conversion_config.json"
@@ -312,9 +313,15 @@ class FormatAnalyzerStep:
     def _run_llm(
         self, manifest: dict, file_listing: str, text_previews: str
     ) -> Optional[ConversionConfigResult]:
+        dataset_id = manifest.get("dataset_id", "N/A")
+        species_hint = (
+            manifest.get("species")
+            or self._load_metadata_species(dataset_id)
+            or "unknown"
+        )
         system_prompt = FORMAT_ANALYZER_SYSTEM_PROMPT.format(
-            dataset_id=manifest.get("dataset_id", "N/A"),
-            species=manifest.get("species", manifest.get("repository", "unknown")),
+            dataset_id=dataset_id,
+            species=species_hint,
             technology=manifest.get("technology", "unknown"),
             confirmed_format=manifest.get("confirmed_format", "unknown"),
             raw_data_available=manifest.get("raw_data_available", "unknown"),
@@ -334,6 +341,22 @@ class FormatAnalyzerStep:
         self.last_token_usage = token_usage
         return res
 
+    def _load_metadata_species(self, dataset_id: str) -> Optional[str]:
+        """Read species from 0.metadata/{pmid}.json as a fallback when the manifest lacks it."""
+        pmid = dataset_id.rsplit("_", 1)[0]
+        path = os.path.join(self.data_folder, METADATA_SUBDIR, f"{pmid}.json")
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path) as f:
+                meta = json.load(f)
+            for ds in meta.get("datasets", []):
+                if ds.get("dataset_id") == dataset_id:
+                    return ds.get("species") or None
+        except Exception as exc:
+            logger.debug("Could not load metadata species for %s: %s", dataset_id, exc)
+        return None
+
     def _build_config(
         self, dataset_id: str, manifest: dict, result: ConversionConfigResult
     ) -> dict:
@@ -344,6 +367,17 @@ class FormatAnalyzerStep:
                 "FormatAnalyzerStep: unknown data_type '%s' for %s — keeping as-is",
                 data_type, dataset_id,
             )
+
+        # If the LLM could not determine species, fall back to the metadata file.
+        species = result.species
+        if species == "Other":
+            meta_species = self._load_metadata_species(dataset_id)
+            if meta_species and meta_species != "Other":
+                logger.info(
+                    "FormatAnalyzerStep: overriding LLM species 'Other' → '%s' from metadata for %s",
+                    meta_species, dataset_id,
+                )
+                species = meta_species
 
         # Repair the LLM's primary_file into a real path on disk when possible,
         # so it points at the actual matrix (e.g. an extracted 10x directory)
@@ -368,7 +402,7 @@ class FormatAnalyzerStep:
             "reasoning": result.reasoning_process,
             "data_type": data_type,
             "primary_file": primary_file,
-            "species": result.species,
+            "species": species,
             "gene_mapping_needed": result.gene_mapping_needed,
             "normalization_status": result.normalization_status,
             "requires_r_extraction": result.requires_r_extraction,
