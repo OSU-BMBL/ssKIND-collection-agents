@@ -37,6 +37,7 @@ def _make_conversion_config(
     pmid: str = "99999999",
     requires_r_extraction: bool = False,
     gene_mapping_needed: bool = False,
+    normalization_status: str = "raw_counts",
 ) -> None:
     raw_dir = os.path.join(str(tmp_path), "2.raw", dataset_id)
     os.makedirs(raw_dir, exist_ok=True)
@@ -48,7 +49,7 @@ def _make_conversion_config(
         "primary_file": primary_file,
         "species": species,
         "gene_mapping_needed": gene_mapping_needed,
-        "normalization_status": "raw_counts",
+        "normalization_status": normalization_status,
         "requires_r_extraction": requires_r_extraction,
         "special_handling": None,
     }
@@ -249,6 +250,7 @@ def test_10x_dir_resolved_from_bogus_primary_file(tmp_path):
         tmp_path, dataset_id, data_type="10x",
         primary_file="GSE147528_RAW.tar -> extracted 10x matrix directory",
         species="Human",
+        normalization_status="normalized",  # test fixture has low counts; skip empty-drop filter
     )
     step = FormatConverterStep(data_folder=str(tmp_path))
     result = step.convert(dataset_id)

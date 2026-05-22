@@ -37,6 +37,14 @@ RAW_SUBDIR = "2.raw"
 HUMAN_H5AD_SUBDIR = "3.h5ad"
 MOUSE_H5AD_SUBDIR = "3.Mh5ad"
 
+# Minimum UMI count per barcode when filtering empty droplets from raw (unfiltered)
+# Cell Ranger output. Raw matrices include all barcodes; real cells typically have
+# hundreds to thousands of UMIs, while ambient barcodes cluster at 1–5.
+RAW_CELLRANGER_MIN_COUNTS = 500
+
+# data_type values that can produce raw (unfiltered) Cell Ranger output
+_RAW_CELLRANGER_DATA_TYPES = {"h5", "10x", "10x_matrix"}
+
 
 def _unique_sample_names(paths: list) -> list:
     """Sample label per path, disambiguating any collisions with a suffix."""
@@ -271,8 +279,16 @@ class SingleCellConverter:
         pmid: str,
         data_type: str,
         mapping_dict: Optional[dict] = None,
+        empty_drop_min_counts: int = 1,
     ) -> None:
         adata = self.read_data(input_path, data_type)
+        if empty_drop_min_counts > 1:
+            n_before = adata.n_obs
+            sc.pp.filter_cells(adata, min_counts=empty_drop_min_counts)
+            logger.info(
+                "convert: %s → %s (dropped %d barcodes below min_counts=%d)",
+                n_before, adata.n_obs, n_before - adata.n_obs, empty_drop_min_counts,
+            )
         if mapping_dict:
             adata = self.convert_to_symbol_counts(adata, mapping_dict)
         adata.obs["normalization_status"] = (
@@ -290,6 +306,7 @@ class SingleCellConverter:
         sample_names: list,
         mapping_dict: Optional[dict] = None,
         drop_empty: bool = True,
+        empty_drop_min_counts: int = 1,
     ) -> None:
         """Read several per-sample matrices, tag and merge into one AnnData.
 
@@ -297,16 +314,21 @@ class SingleCellConverter:
         (zero-count) droplets are dropped per sample first — essential for raw
         Cell Ranger matrices, a no-op for already-filtered ones. Gene-symbol
         mapping is applied once, after the merge.
+
+        ``empty_drop_min_counts`` controls the per-barcode UMI threshold used
+        when ``drop_empty=True``. Use ``RAW_CELLRANGER_MIN_COUNTS`` (500) for
+        unfiltered Cell Ranger output to strip ambient barcodes before merging.
         """
         adatas = []
         for path, sample in zip(input_paths, sample_names):
             adata = self.read_data(path, data_type)
             if drop_empty:
                 n_before = adata.n_obs
-                sc.pp.filter_cells(adata, min_counts=1)
+                sc.pp.filter_cells(adata, min_counts=empty_drop_min_counts)
                 logger.info(
-                    "convert_many: %s %s → %s (dropped %d empty droplets)",
+                    "convert_many: %s %s → %s (dropped %d barcodes below min_counts=%d)",
                     sample, n_before, adata.n_obs, n_before - adata.n_obs,
+                    empty_drop_min_counts,
                 )
             adata.obs["sample"] = sample
             adatas.append(adata)
@@ -451,6 +473,21 @@ class FormatConverterStep:
         )
 
         mapping_dict = self._get_mapping(config)
+
+        # Use a higher empty-droplet threshold for raw (unfiltered) Cell Ranger
+        # output so that ambient barcodes are stripped before merging samples.
+        empty_drop_min_counts = 1
+        if (
+            config.get("normalization_status") == "raw_counts"
+            and config.get("data_type") in _RAW_CELLRANGER_DATA_TYPES
+        ):
+            empty_drop_min_counts = RAW_CELLRANGER_MIN_COUNTS
+            logger.info(
+                "FormatConverterStep: raw Cell Ranger data detected for %s — "
+                "using empty_drop_min_counts=%d",
+                dataset_id, empty_drop_min_counts,
+            )
+
         try:
             if len(inputs) == 1:
                 self._converter.convert(
@@ -460,6 +497,7 @@ class FormatConverterStep:
                     pmid=config.get("pmid", ""),
                     data_type=config["data_type"],
                     mapping_dict=mapping_dict,
+                    empty_drop_min_counts=empty_drop_min_counts,
                 )
             else:
                 sample_names = _unique_sample_names(inputs)
@@ -475,6 +513,7 @@ class FormatConverterStep:
                     data_type=config["data_type"],
                     sample_names=sample_names,
                     mapping_dict=mapping_dict,
+                    empty_drop_min_counts=empty_drop_min_counts,
                 )
             result = {
                 "dataset_id": dataset_id,

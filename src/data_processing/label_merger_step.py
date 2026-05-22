@@ -159,6 +159,7 @@ class LabelMergerStep:
 
         n_unknown = int((adata.obs["cell_type"] == "Unknown").sum())
         n_cells = adata.n_obs
+        adata.uns["annotation_status"] = "annotated"
         adata.write_h5ad(out_h5ad, compression="gzip")
 
         logger.info(
@@ -183,6 +184,7 @@ class LabelMergerStep:
         reason: str,
     ) -> dict:
         adata.obs["cell_type"] = "Unknown"
+        adata.uns["annotation_status"] = "no_labels"
         adata.write_h5ad(out_h5ad, compression="gzip")
         logger.info("LabelMergerStep: %s — all cells marked Unknown (%s)", dataset_id, reason)
         return {

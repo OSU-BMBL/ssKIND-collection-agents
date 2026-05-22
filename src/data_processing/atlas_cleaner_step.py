@@ -9,7 +9,7 @@ Ported from reference_ignore/ATLAS_Human/0.1_clean_atlas_unknown.py.
 Prepares a single labeled h5ad for atlas inclusion:
   - validates gene_ids / gene_symbols columns
   - removes genes with invalid names ("nan-" prefix)
-  - removes "Unknown" cell-type cells
+  - removes "Unknown" cell-type cells (only when annotation ran; skipped when annotation was disabled)
   - enforces minimum cell count (MIN_CELLS_FOR_ATLAS = 200)
   - makes obs_names globally unique: {dataset_id}_{barcode}
   - strips bulk QC/scrublet obs columns and ancillary var columns
@@ -153,10 +153,21 @@ def _clean_single(adata: ad.AnnData, dataset_id: str, out_path: str) -> dict:
     adata.var_names = adata.var["gene_symbols"].astype(str)
     adata.var_names_make_unique()
 
-    # 6. Remove Unknown cell-type cells
-    if "cell_type" in adata.obs.columns:
+    # 6. Remove Unknown cell-type cells — only when annotation actually ran.
+    # LabelMergerStep writes uns["annotation_status"] = "annotated" when labels
+    # were merged, and "no_labels" when annotation was disabled or unavailable.
+    # Defaulting to "annotated" is the safe choice for h5ads written before this
+    # flag existed (they were produced with annotation enabled).
+    annotation_status = adata.uns.get("annotation_status", "annotated")
+    if "cell_type" in adata.obs.columns and annotation_status == "annotated":
         keep = adata.obs["cell_type"] != "Unknown"
         adata = adata[keep].copy()
+    elif annotation_status != "annotated":
+        logger.info(
+            "AtlasCleanerStep: %s — annotation was not run (status=%r), "
+            "keeping all %d cells",
+            dataset_id, annotation_status, adata.n_obs,
+        )
 
     n_cells_after_unknown = adata.n_obs
 
@@ -166,7 +177,7 @@ def _clean_single(adata: ad.AnnData, dataset_id: str, out_path: str) -> dict:
             "dataset_id": dataset_id,
             "status": "skipped",
             "message": (
-                f"Only {n_cells_after_unknown} cells after removing Unknowns "
+                f"Only {n_cells_after_unknown} cells remaining "
                 f"(minimum {MIN_CELLS_FOR_ATLAS} required for atlas)"
             ),
             "n_cells_in": n_cells_in,
