@@ -139,6 +139,7 @@ class RepositoryAnalystStep:
         Returns the manifest dict, or None on failure.
         Skips the LLM call if the manifest file already exists.
         """
+        self.last_token_usage = None
         dataset_id = dataset["dataset_id"]
         out_path = self._output_path(dataset_id)
 
@@ -230,7 +231,7 @@ class RepositoryAnalystStep:
             file_listing=file_lines,
         )
         agent = CommonAgent(llm=self.llm)
-        res, _, _, _ = agent.go(
+        res, _, token_usage, _ = agent.go(
             system_prompt=system_prompt,
             instruction_prompt=(
                 "Analyse the file listing. Select the files needed for the raw count matrix "
@@ -238,6 +239,7 @@ class RepositoryAnalystStep:
             ),
             schema=RepositoryAnalysisResult,
         )
+        self.last_token_usage = token_usage
         return res
 
     # ------------------------------------------------------------------

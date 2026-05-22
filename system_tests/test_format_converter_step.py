@@ -90,15 +90,16 @@ def _write_10x_dir(tmp_path, dataset_id: str, dir_name: str) -> None:
     import scipy.io as sio
     mtx_path = os.path.join(raw_dir, "matrix.mtx")
     sio.mmwrite(mtx_path, matrix)
-    os.rename(mtx_path, mtx_path)  # no-op to ensure file exists
 
+    # 10x v3 files are TAB-separated; features.tsv = [gene_id, symbol, type].
     with gzip.open(os.path.join(raw_dir, "barcodes.tsv.gz"), "wt") as f:
-        barcodes.to_csv(f, index=False, header=False)
+        barcodes.to_csv(f, sep="\t", index=False, header=False)
     with gzip.open(os.path.join(raw_dir, "features.tsv.gz"), "wt") as f:
-        features.to_csv(f, index=False, header=False)
+        features.to_csv(f, sep="\t", index=False, header=False)
     with gzip.open(os.path.join(raw_dir, "matrix.mtx.gz"), "wb") as fout:
-        with open(os.path.join(raw_dir, "matrix.mtx"), "rb") as fin:
+        with open(mtx_path, "rb") as fin:
             fout.write(fin.read())
+    os.remove(mtx_path)  # keep only the gzipped matrix (10x v3 layout)
 
 
 # ---------------------------------------------------------------------------
@@ -235,3 +236,58 @@ def test_unknown_species_returns_failed(tmp_path):
     result = step.convert(dataset_id)
     assert result is not None
     assert result["status"] == "failed"
+
+
+def test_10x_dir_resolved_from_bogus_primary_file(tmp_path):
+    """Reproduces the reported bug: a 10x dataset whose primary_file is a
+    description (because a *_RAW.tar was extracted) must still convert by
+    resolving the extracted 10x directory on disk."""
+    dataset_id = "99999999_07"
+    # Simulate the downloader having extracted GSE_RAW.tar into a subdirectory.
+    _write_10x_dir(tmp_path, dataset_id, "GSE147528_RAW")
+    _make_conversion_config(
+        tmp_path, dataset_id, data_type="10x",
+        primary_file="GSE147528_RAW.tar -> extracted 10x matrix directory",
+        species="Human",
+    )
+    step = FormatConverterStep(data_folder=str(tmp_path))
+    result = step.convert(dataset_id)
+
+    assert result is not None, "convert() returned None"
+    assert result["status"] == "success", f"Unexpected status: {result}"
+
+    h5ad_path = os.path.join(str(tmp_path), "3.h5ad", f"{dataset_id}.h5ad")
+    assert os.path.exists(h5ad_path)
+    adata = ad.read_h5ad(h5ad_path)
+    assert adata.n_obs == 4
+    assert adata.n_vars == 3
+
+
+def test_multi_sample_merge_into_one_h5ad(tmp_path):
+    """Several per-sample matrix files in a directory merge into one h5ad with
+    an obs['sample'] column (GSE147528-style multi-sample dataset)."""
+    import scipy.io as sio
+
+    dataset_id = "99999999_08"
+    raw = os.path.join(str(tmp_path), "2.raw", dataset_id, "GSE_RAW")
+    os.makedirs(raw, exist_ok=True)
+    # 4 cells x 3 genes, all cells non-empty.
+    m = sp.csr_matrix(np.array([[1, 0, 3], [0, 5, 0], [2, 2, 2], [4, 1, 1]], dtype=float))
+    sio.mmwrite(os.path.join(raw, "GSM1_SFG2.mtx"), m)
+    sio.mmwrite(os.path.join(raw, "GSM2_EC1.mtx"), m)
+
+    _make_conversion_config(
+        tmp_path, dataset_id, data_type="mtx",
+        primary_file="GSE_RAW.tar -> extracted matrices", species="Human",
+    )
+    step = FormatConverterStep(data_folder=str(tmp_path))
+    result = step.convert(dataset_id)
+
+    assert result is not None, "convert() returned None"
+    assert result["status"] == "success", f"Unexpected status: {result}"
+    assert result["n_samples"] == 2
+
+    adata = ad.read_h5ad(os.path.join(str(tmp_path), "3.h5ad", f"{dataset_id}.h5ad"))
+    assert adata.n_obs == 8  # 4 + 4
+    assert "sample" in adata.obs.columns
+    assert set(adata.obs["sample"].unique()) == {"GSM1_SFG2", "GSM2_EC1"}

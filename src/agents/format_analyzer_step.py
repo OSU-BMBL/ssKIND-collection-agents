@@ -27,10 +27,12 @@ from langchain_openai.chat_models.base import BaseChatOpenAI
 from pydantic import BaseModel, Field
 
 from .common_agent import CommonAgent
+from ..data_processing.archive_utils import resolve_input_path
 
 logger = logging.getLogger(__name__)
 
 MANIFEST_SUBDIR = "1.manifest"
+METADATA_SUBDIR = "0.metadata"
 RAW_SUBDIR = "2.raw"
 DOWNLOAD_STATUS_FILENAME = "download_status.json"
 CONVERSION_CONFIG_FILENAME = "conversion_config.json"
@@ -80,7 +82,10 @@ Your task is to decide the **exact conversion strategy** for this dataset:
     "unknown"    → cannot be determined
 
 - **primary_file** — the filename of the main count matrix to convert (not metadata CSVs).
-  For a 10x directory, set this to the directory name or the path to matrix.mtx.gz.
+  For a 10x directory, set this to the directory name that holds matrix.mtx.gz +
+  barcodes.tsv.gz + features.tsv.gz. Archives (e.g. *_RAW.tar) are already
+  unpacked for you — point primary_file at the extracted file/directory, never at
+  the .tar/.zip itself.
 
 - **species** — confirm or correct the species ("Human", "Mouse", or "Other").
 
@@ -101,8 +106,13 @@ Key heuristics:
 - `.rds` or `.rds.gz` files → data_type = "rds", requires_r_extraction = true
 - `.rdata` / `.rda` files → data_type = "rdata", requires_r_extraction = true
 - `matrix.mtx.gz` + `barcodes.tsv.gz` + `features.tsv.gz` in the same directory → data_type = "10x"
-- `filtered_feature_bc_matrix.h5` or `raw_feature_bc_matrix.h5` → data_type = "h5"
-- `*_RAW.tar` → data_type = "archive"; special_handling = "extract archive first"
+- Cell Ranger HDF5 (`*.h5`, e.g. `filtered_feature_bc_matrix.h5`, `raw_feature_bc_matrix.h5`,
+  `*_raw_gene_bc_matrices_h5.h5`) → data_type = "h5"
+- `*_RAW.tar` is auto-extracted: ignore the archive itself and classify by its
+  EXTRACTED contents — e.g. many per-sample `*.h5` → "h5"; an mtx triplet dir → "10x".
+- Multi-sample: when several per-sample matrix files of the same format are present
+  (one `.h5` per GEO sample), set primary_file to the extracted DIRECTORY that holds
+  them — the converter merges every sample into one h5ad automatically.
 - `.h5ad` → data_type = "h5ad", requires_r_extraction = false
 - Filename containing "processed", "integrated", "annotated", "normalized" → normalization_status = "normalized"
 - Filename containing "raw", "counts", "count_matrix" → normalization_status = "raw_counts"
@@ -182,6 +192,7 @@ class FormatAnalyzerStep:
         Returns the config dict, or None on failure.
         Skips the LLM call if the config already exists.
         """
+        self.last_token_usage = None
         config_path = self._config_path(dataset_id)
         if os.path.exists(config_path):
             logger.info("FormatAnalyzerStep: %s already analyzed, loading from disk", dataset_id)
@@ -251,44 +262,66 @@ class FormatAnalyzerStep:
             lines.append(
                 f"  [{status}] {rec['filename']}  ({size_mb:.1f} MB)"
             )
+            # Archive members are unpacked by the downloader — list them so the
+            # LLM can choose a real primary_file (e.g. the extracted 10x dir).
+            extracted = rec.get("extracted_files")
+            if extracted:
+                dest = rec.get("extracted_to", "")
+                for member in extracted:
+                    rel = os.path.join(dest, member) if dest else member
+                    lines.append(f"      └─ {rel}")
         return "\n".join(lines) if lines else "  (no files)"
 
     def _build_text_previews(self, dataset_id: str, download_status: dict) -> str:
         raw_dir = os.path.join(self.data_folder, RAW_SUBDIR, dataset_id)
-        previews = []
+
+        # (display_name, local_path) for each downloaded file and each extracted
+        # archive member, so previews cover the real contents (e.g. features.tsv.gz).
+        candidates: list[tuple[str, str]] = []
         for rec in download_status.get("files", []):
             if rec.get("status") not in ("success", "skipped"):
                 continue
-            filename = rec["filename"]
-            size = rec.get("size_bytes") or 0
-            # Only peek at small files with text extensions
-            base = filename.lower()
-            if size > TEXT_SNIFF_LIMIT:
-                continue
+            candidates.append((rec["filename"], os.path.join(raw_dir, rec["filename"])))
+            dest = rec.get("extracted_to", "")
+            for member in rec.get("extracted_files", []) or []:
+                rel = os.path.join(dest, member) if dest else member
+                candidates.append((rel, os.path.join(raw_dir, rel)))
+
+        previews = []
+        for display_name, local_path in candidates:
+            base = display_name.lower()
             if not any(base.endswith(ext) for ext in TEXT_EXTENSIONS):
                 continue
-            local_path = os.path.join(raw_dir, filename)
-            if not os.path.exists(local_path):
+            if not os.path.exists(local_path) or os.path.getsize(local_path) > TEXT_SNIFF_LIMIT:
                 continue
-            try:
-                import gzip
-                if local_path.endswith(".gz"):
-                    with gzip.open(local_path, "rt", errors="replace") as fh:
-                        content = "".join(fh.readlines()[:10])
-                else:
-                    with open(local_path, errors="replace") as fh:
-                        content = "".join(fh.readlines()[:10])
-                previews.append(f"--- {filename} (first 10 lines) ---\n{content}")
-            except Exception as exc:
-                logger.debug("Could not peek %s: %s", filename, exc)
+            preview = self._peek_text(local_path)
+            if preview is not None:
+                previews.append(f"--- {display_name} (first 10 lines) ---\n{preview}")
         return "\n\n".join(previews) if previews else "(no small text files available)"
+
+    @staticmethod
+    def _peek_text(local_path: str) -> Optional[str]:
+        try:
+            import gzip
+            opener = gzip.open if local_path.endswith(".gz") else open
+            with opener(local_path, "rt", errors="replace") as fh:
+                return "".join(fh.readlines()[:10])
+        except Exception as exc:
+            logger.debug("Could not peek %s: %s", local_path, exc)
+            return None
 
     def _run_llm(
         self, manifest: dict, file_listing: str, text_previews: str
     ) -> Optional[ConversionConfigResult]:
+        dataset_id = manifest.get("dataset_id", "N/A")
+        species_hint = (
+            manifest.get("species")
+            or self._load_metadata_species(dataset_id)
+            or "unknown"
+        )
         system_prompt = FORMAT_ANALYZER_SYSTEM_PROMPT.format(
-            dataset_id=manifest.get("dataset_id", "N/A"),
-            species=manifest.get("species", manifest.get("repository", "unknown")),
+            dataset_id=dataset_id,
+            species=species_hint,
             technology=manifest.get("technology", "unknown"),
             confirmed_format=manifest.get("confirmed_format", "unknown"),
             raw_data_available=manifest.get("raw_data_available", "unknown"),
@@ -297,7 +330,7 @@ class FormatAnalyzerStep:
             text_previews=text_previews,
         )
         agent = CommonAgent(llm=self.llm)
-        res, _, _, _ = agent.go(
+        res, _, token_usage, _ = agent.go(
             system_prompt=system_prompt,
             instruction_prompt=(
                 "Analyse the downloaded files and determine the best conversion strategy. "
@@ -305,11 +338,27 @@ class FormatAnalyzerStep:
             ),
             schema=ConversionConfigResult,
         )
+        self.last_token_usage = token_usage
         return res
 
-    @staticmethod
+    def _load_metadata_species(self, dataset_id: str) -> Optional[str]:
+        """Read species from 0.metadata/{pmid}.json as a fallback when the manifest lacks it."""
+        pmid = dataset_id.rsplit("_", 1)[0]
+        path = os.path.join(self.data_folder, METADATA_SUBDIR, f"{pmid}.json")
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path) as f:
+                meta = json.load(f)
+            for ds in meta.get("datasets", []):
+                if ds.get("dataset_id") == dataset_id:
+                    return ds.get("species") or None
+        except Exception as exc:
+            logger.debug("Could not load metadata species for %s: %s", dataset_id, exc)
+        return None
+
     def _build_config(
-        dataset_id: str, manifest: dict, result: ConversionConfigResult
+        self, dataset_id: str, manifest: dict, result: ConversionConfigResult
     ) -> dict:
         # Normalise data_type to a known value
         data_type = result.data_type.lower().strip()
@@ -318,14 +367,42 @@ class FormatAnalyzerStep:
                 "FormatAnalyzerStep: unknown data_type '%s' for %s — keeping as-is",
                 data_type, dataset_id,
             )
+
+        # If the LLM could not determine species, fall back to the metadata file.
+        species = result.species
+        if species == "Other":
+            meta_species = self._load_metadata_species(dataset_id)
+            if meta_species and meta_species != "Other":
+                logger.info(
+                    "FormatAnalyzerStep: overriding LLM species 'Other' → '%s' from metadata for %s",
+                    meta_species, dataset_id,
+                )
+                species = meta_species
+
+        # Repair the LLM's primary_file into a real path on disk when possible,
+        # so it points at the actual matrix (e.g. an extracted 10x directory)
+        # rather than a description. Stored relative to the dataset's raw dir.
+        primary_file = result.primary_file
+        if not result.requires_r_extraction:
+            dataset_dir = os.path.join(self.data_folder, RAW_SUBDIR, dataset_id)
+            resolved = resolve_input_path(dataset_dir, data_type, result.primary_file)
+            if resolved:
+                rel = os.path.relpath(resolved, dataset_dir)
+                if rel != primary_file:
+                    logger.info(
+                        "FormatAnalyzerStep: resolved primary_file for %s: %r → %r",
+                        dataset_id, result.primary_file, rel,
+                    )
+                primary_file = rel
+
         return {
             "dataset_id": dataset_id,
             "pmid": manifest.get("pmid", ""),
             "analyzed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "reasoning": result.reasoning_process,
             "data_type": data_type,
-            "primary_file": result.primary_file,
-            "species": result.species,
+            "primary_file": primary_file,
+            "species": species,
             "gene_mapping_needed": result.gene_mapping_needed,
             "normalization_status": result.normalization_status,
             "requires_r_extraction": result.requires_r_extraction,

@@ -7,6 +7,9 @@ Output : data/2.raw/{dataset_id}/{filename}   (one file per entry in manifest)
 
 Skips individual files that already exist with matching size.
 Uses streaming HTTP with a Content-Length check for partial-download detection.
+Archives (`*_RAW.tar`, `.tar.gz`, `.zip`, …) are unpacked in place so later
+steps see the real count-matrix files; each archive record gains
+`extracted_to` and `extracted_files`.
 """
 
 from __future__ import annotations
@@ -18,6 +21,8 @@ from datetime import datetime
 from typing import Optional
 
 import requests
+
+from .archive_utils import archive_stem, extract_archive, is_archive
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +74,11 @@ class DataDownloaderStep:
         if os.path.exists(status_path):
             cached = self._load_status(status_path)
             if cached.get("all_success"):
+                # Self-heal: extract any archive downloaded before extraction
+                # support existed (or left unextracted by an earlier run).
+                if self._ensure_extracted(cached, out_dir):
+                    with open(status_path, "w") as f:
+                        json.dump(cached, f, indent=2)
                 logger.info("DataDownloaderStep: %s already complete, skipping", dataset_id)
                 return cached
 
@@ -173,7 +183,45 @@ class DataDownloaderStep:
             record["status"] = "failed"
             record["error"] = str(exc)
 
+        # Unpack archives so later steps see the real count-matrix files.
+        if record["status"] in ("success", "skipped") and is_archive(filename):
+            self._extract_record(record, out_dir)
+
         return record
+
+    def _ensure_extracted(self, status: dict, out_dir: str) -> bool:
+        """Extract any on-disk archive that has no extracted_files yet.
+
+        Returns True if anything was extracted (so the caller rewrites the
+        status file). Lets datasets downloaded before extraction support was
+        added become usable on a plain re-run.
+        """
+        changed = False
+        for record in status.get("files", []):
+            filename = record.get("filename", "")
+            if not is_archive(filename) or record.get("extracted_files"):
+                continue
+            if os.path.exists(os.path.join(out_dir, filename)):
+                self._extract_record(record, out_dir)
+                changed = True
+        return changed
+
+    def _extract_record(self, record: dict, out_dir: str) -> None:
+        """Extract an archive file in-place; annotate the record."""
+        filename = record["filename"]
+        archive_path = os.path.join(out_dir, filename)
+        dest = os.path.join(out_dir, archive_stem(filename))
+        try:
+            members = extract_archive(archive_path, dest)
+            record["extracted_to"] = os.path.relpath(dest, out_dir)
+            record["extracted_files"] = members
+            logger.info(
+                "DataDownloaderStep: extracted %s → %s (%d files)",
+                filename, record["extracted_to"], len(members),
+            )
+        except Exception as exc:
+            logger.error("DataDownloaderStep: failed to extract %s: %s", filename, exc)
+            record["extract_error"] = str(exc)
 
     def _remote_size(self, url: str) -> Optional[int]:
         """Return Content-Length from a HEAD request, or None if unavailable."""

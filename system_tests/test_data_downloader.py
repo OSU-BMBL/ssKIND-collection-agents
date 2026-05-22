@@ -12,6 +12,7 @@ the test fast without mocking.
 import json
 import logging
 import os
+import tarfile
 
 import pytest
 
@@ -185,3 +186,68 @@ def test_download_fixture_manifest_dataset_03(tmp_path):
     assert status is not None
     assert status["all_success"] is True
     logger.info("Fixture manifest download status: %s", status)
+
+
+# ---------------------------------------------------------------------------
+# Archive extraction (offline)
+# ---------------------------------------------------------------------------
+
+def test_extract_record_unpacks_archive(tmp_path):
+    """A downloaded archive is unpacked and the record gains extracted_files."""
+    dataset_id = "test_archive"
+    out_dir = os.path.join(str(tmp_path), "2.raw", dataset_id)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Build a tiny tar containing a nested file.
+    member_src = os.path.join(str(tmp_path), "matrix.mtx.gz")
+    with open(member_src, "wb") as f:
+        f.write(b"%%MatrixMarket\n1 1 1\n1 1 1\n")
+    tar_path = os.path.join(out_dir, "GSE1_RAW.tar")
+    with tarfile.open(tar_path, "w") as tf:
+        tf.add(member_src, arcname="GSM1_matrix.mtx.gz")
+
+    step = DataDownloaderStep(data_folder=str(tmp_path))
+    record = {"filename": "GSE1_RAW.tar", "status": "success"}
+    step._extract_record(record, out_dir)
+
+    assert record["extracted_to"] == "GSE1_RAW"
+    assert "GSM1_matrix.mtx.gz" in record["extracted_files"]
+    assert os.path.exists(os.path.join(out_dir, "GSE1_RAW", "GSM1_matrix.mtx.gz"))
+
+
+def test_download_self_heals_unextracted_archive(tmp_path):
+    """A cached, already-complete download with an unextracted archive on disk
+    gets extracted on a plain re-run (no re-download)."""
+    dataset_id = "test_selfheal"
+    out_dir = os.path.join(str(tmp_path), "2.raw", dataset_id)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Place an archive + a stale status that predates extraction support.
+    member_src = os.path.join(str(tmp_path), "matrix.mtx.gz")
+    with open(member_src, "wb") as f:
+        f.write(b"%%MatrixMarket\n1 1 1\n1 1 1\n")
+    with tarfile.open(os.path.join(out_dir, "GSE1_RAW.tar"), "w") as tf:
+        tf.add(member_src, arcname="GSM1_matrix.mtx.gz")
+
+    status = {
+        "dataset_id": dataset_id,
+        "files": [{"filename": "GSE1_RAW.tar", "status": "success", "size_bytes": 1}],
+        "all_success": True,
+    }
+    with open(os.path.join(out_dir, STATUS_FILENAME), "w") as f:
+        json.dump(status, f)
+    # Manifest must exist for download() to proceed.
+    _make_minimal_manifest(
+        dataset_id, tmp_path,
+        files=[{"filename": "GSE1_RAW.tar", "url": "http://example/GSE1_RAW.tar"}],
+    )
+
+    step = DataDownloaderStep(data_folder=str(tmp_path))
+    result = step.download(dataset_id)
+
+    rec = result["files"][0]
+    assert rec.get("extracted_to") == "GSE1_RAW"
+    assert os.path.exists(os.path.join(out_dir, "GSE1_RAW", "GSM1_matrix.mtx.gz"))
+    # Status file on disk was updated with the extraction info.
+    with open(os.path.join(out_dir, STATUS_FILENAME)) as f:
+        assert json.load(f)["files"][0].get("extracted_to") == "GSE1_RAW"
