@@ -43,7 +43,7 @@ Then fill in the required variables:
 | `OPENAI_DEPLOYMENT_NAME` | Azure deployment name |
 | `OPENAI_MODEL` | Model name (e.g. `gpt-4o`) |
 | `OPENAI_MAX_OUTPUT_TOKENS` | Max output tokens (default `16380`) |
-| `BASE_URL` | NetToolkit server URL (default `http://127.0.0.1:3001`) |
+| `BASE_URL` | NetToolkit server URL - optional (default `http://127.0.0.1:3001`) |
 
 #### Pipeline 2 — Data Processing (additional variables)
 
@@ -57,14 +57,15 @@ Then fill in the required variables:
 
 If `HUMAN_MAPMYCELLS_TAXONOMY_PATH` / `MOUSE_MAPMYCELLS_TAXONOMY_PATH` are not set, cell-type annotation is skipped and all cells are labelled `"Unknown"` — downstream atlas steps still run normally.
 
-### NetToolkit (required for full-text retrieval)
+### NetToolkit (required for non-PubMed full-text retrieval)
 
-`app_script.py` and `app_processing.py` rely on [NetToolkit](https://hub.docker.com/r/frankfeng78/nettoolkit/tags) to download PubMed literature. Start it before running either pipeline:
+`app_script.py` and `app_processing.py` rely on [NetToolkit](https://hub.docker.com/r/frankfeng78/nettoolkit/tags) to download non-PubMed literature. Start it before running either pipeline:
 
 ```bash
 docker pull frankfeng78/nettoolkit:0.1.7
 docker run -d --name nettoolkit -p3001:3001 frankfeng78/nettoolkit:0.1.7
 ```
+If it is not provided, only PubMed papers are supported.
 
 ### Run tests
 
