@@ -143,3 +143,8 @@ When the downloaded data is an unfiltered Cell Ranger output (raw barcode-gene m
 ### Cell-type annotation
 
 Cell-type annotation uses [MapMyCells](https://github.com/AllenInstitute/cell_type_mapper) with Allen Institute taxonomies. Configure the paths via `HUMAN_MAPMYCELLS_TAXONOMY_PATH` and `MOUSE_MAPMYCELLS_TAXONOMY_PATH`. If these are not set, annotation is skipped gracefully and cells receive `cell_type = "Unknown"`. The atlas cleaning step respects this and does not remove cells when annotation was not run.
+
+
+## License
+
+© BMBL and Matrix Lab. This model and associated code are released under the BSD 3-Clause License and may only be used for non-commercial, academic research purposes with proper attribution.
