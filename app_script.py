@@ -129,24 +129,24 @@ def execute_collection(
     
     return valid_pmids
 
-def main_execute(scope: str):
-    query, mindate, maxdate = read_config_query(scope) # '("Alzheimer") AND ("scRNA-seq" OR "single cell RNA sequencing"  OR "snRNA-seq" OR "single nucleus RNA sequencing")' # '(Alzheimer AND ("single cell" OR "single nucleus" OR "single-cell")) AND ("RNA sequencing" OR "RNA-seq" OR "single-cell RNA-seq")'
+def main_execute(scope: str, mindate: str = None, maxdate: str = None):
+    query, cfg_mindate, cfg_maxdate = read_config_query(scope)
     identify_original_instructions = read_config_identify_original_instructions(scope)
     identify_relevant_instructions = read_config_identify_relevant_instructions(scope)
     valid_pmids = execute_collection(
         scope=scope,
         query=query,
-        mindate=mindate,
-        maxdate=maxdate,
+        mindate=mindate or cfg_mindate,
+        maxdate=maxdate or cfg_maxdate,
         identify_original_instructions=identify_original_instructions,
         identify_relevant_instructions=identify_relevant_instructions,
     )
-    
-    return valid_pmids    
+
+    return valid_pmids
 
 
-def main(scope):
-    main_execute(scope)
+def main(scope, mindate=None, maxdate=None):
+    main_execute(scope, mindate=mindate, maxdate=maxdate)
 
     for handler in logger.handlers:
         handler.flush()
@@ -159,9 +159,11 @@ if __name__ == "__main__":
     str_entries = str_entries[:-1]
     parser = argparse.ArgumentParser()
     parser.add_argument("-s", "--scope", default="SC_Alzheimer", help=f"disease scope, like {str_entries}")
+    parser.add_argument("--mindate", default=None, help="override mindate (YYYY/MM/DD), e.g. 2025/06/01")
+    parser.add_argument("--maxdate", default=None, help="override maxdate (YYYY/MM/DD), e.g. 2025/06/14")
     args = parser.parse_args()
     args = vars(args)
     if not args["scope"] or args["scope"] not in entries:
         parser.print_usage()
     else:
-        main(args["scope"])
+        main(args["scope"], mindate=args["mindate"], maxdate=args["maxdate"])
