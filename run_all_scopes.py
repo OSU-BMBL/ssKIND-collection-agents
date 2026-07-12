@@ -1,21 +1,10 @@
 
 import argparse
+import json
+import logging
 import os
-import subprocess
 
-def run_command(command: list, cwd: str = None, timeout: int = None):
-    try:
-        result = subprocess.run(
-            command,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout
-        )
-        return result.stdout, result.stderr, result.returncode
-    except subprocess.TimeoutExpired as e:
-        return e.stdout or "", e.stderr or f"Command timed out after {timeout} seconds", -1
+from app_script import main_execute
 
 ALL_SCOPES = [
     'Alzheimer_SingleCell',
@@ -40,19 +29,31 @@ ALL_SCOPES = [
     'Prion_diseases_Spatial',
 ]
 
+logger = logging.getLogger(__name__)
+
+
 def main(scopes, mindate=None, maxdate=None):
+    all_results = {}
     for scope in scopes:
-        cmd = ["python", "./app_script.py", "-s", scope]
-        if mindate:
-            cmd += ["--mindate", mindate]
-        if maxdate:
-            cmd += ["--maxdate", maxdate]
-        out, error, code = run_command(cmd)
-        if code != 0:
-            with open(f"./{scope}_error.log", "w") as fobj:
-                fobj.write(str(error))
-        with open(f"./{scope}_success.log", "w") as fobj:
-            fobj.write(out)
+        logger.info("=" * 64)
+        logger.info("Running scope: %s", scope)
+        try:
+            valid_pmids = main_execute(scope, mindate=mindate, maxdate=maxdate)
+            all_results[scope] = valid_pmids
+            logger.info("Scope %s done — %d valid PMIDs: %s", scope, len(valid_pmids), valid_pmids)
+        except Exception as exc:
+            logger.error("Scope %s failed: %s", scope, exc)
+            all_results[scope] = []
+
+    # Write consolidated results
+    out_path = "all_scopes_results.json"
+    with open(out_path, "w") as f:
+        json.dump(all_results, f, indent=2)
+    logger.info("Wrote consolidated results to %s", out_path)
+
+    total = sum(len(v) for v in all_results.values())
+    logger.info("All scopes complete. Total valid PMIDs across all scopes: %d", total)
+    return all_results
 
 
 if __name__ == "__main__":
