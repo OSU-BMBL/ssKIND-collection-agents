@@ -1,0 +1,35 @@
+{
+  "n_scopes": 16,
+  "n_single_cell": 9,
+  "n_spatial": 7,
+  "overlap": 182,
+  "ai_only": 244,
+  "manual_only": 19,
+  "ssread": 73,
+  "n_ai_total": 426,
+  "n_manual_total": 201,
+  "recall_pct": 90.5,
+  "recall_ci95": [
+    85.7,
+    93.9
+  ],
+  "expansion": 2.12,
+  "jaccard_pct": 40.9,
+  "unique_papers": {
+    "overlap": 175,
+    "ai_only": 222,
+    "manual_only": 17,
+    "ssread": 60
+  },
+  "multi_scope_pmids": 39,
+  "data_issues": 8,
+  "best_scope": "Multiple sclerosis (single-cell)",
+  "best_scope_recall_pct": 96.2,
+  "best_scope_n": 52,
+  "top_expansion_scope": "Parkinson's (spatial)",
+  "top_expansion": 3.33,
+  "scopes_no_manual": [
+    "Prion disease (spatial)",
+    "Spinal muscular atrophy (spatial)"
+  ]
+}

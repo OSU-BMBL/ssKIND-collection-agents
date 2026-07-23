@@ -1,0 +1,21 @@
+DATA QUALITY REPORT
+===================
+
+Precedence for cross-section duplicates: overlap > manual_only > ai_only > ssread
+
+8 issue(s) found and resolved:
+  - single-cell-frontotemporal-dementia-result-20260723.txt: PMID 38521060 appeared in both [ai_only] and [ssread] - assigned to [ai_only] by precedence
+  - single-cell-frontotemporal-dementia-result-20260723.txt: PMID 37714849 appeared in both [ai_only] and [ssread] - assigned to [ai_only] by precedence
+  - single-cell-parkinson-result-20260723.txt: PMID 39138468 appeared in both [ai_only] and [ssread] - assigned to [ai_only] by precedence
+  - single-cell-parkinson-result-20260723.txt: PMID 36993867 appeared in both [ai_only] and [ssread] - assigned to [ai_only] by precedence
+  - single-cell-parkinson-result-20260723.txt: PMID 35700056 appeared in both [ai_only] and [ssread] - assigned to [ai_only] by precedence
+  - single-cell-parkinson-result-20260723.txt: PMID 34919646 appeared in both [ai_only] and [ssread] - assigned to [ai_only] by precedence
+  - single-cell-spinocerebellar-ataxia-result-20260723.txt: PMID 38016472 appeared in both [overlap] and [manual_only] - assigned to [overlap] by precedence
+  - single-cell-spinocerebellar-ataxia-result-20260723.txt: PMID 39504355 appeared in both [overlap] and [manual_only] - assigned to [overlap] by precedence
+
+CAVEATS
+-------
+1. AI-only papers are UNVALIDATED. Precision/F1 are not computable.
+2. Totals count scope-paper assignments; 39 PMIDs appear in >1 scope.
+3. ssREAD is a legacy inherited set with different date coverage;
+   it is not a third curator and is excluded from the comparison.
